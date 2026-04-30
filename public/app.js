@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-reference-fix";
+const appVersion = "20260501-optimize-fallback";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];

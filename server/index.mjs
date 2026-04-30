@@ -101,7 +101,7 @@ app.post("/api/optimize-prompt", async (request, response) => {
   } catch (error) {
     const message = errorMessage(error);
     process.stderr.write(`prompt optimize failed: ${message}\n`);
-    response.status(502).json({ ok: false, message });
+    response.status(502).json({ ok: false, message: publicOptimizeError(message), detail: message });
   }
 });
 
@@ -275,7 +275,18 @@ function sanitizeParams(value) {
 
 async function optimizePromptText(settings, prompt, params, references) {
   const messages = buildPromptOptimizationMessages(prompt, params, references);
-  return { prompt: await optimizePromptWithChat(settings, messages), mode: "chat" };
+  const errors = [];
+  try {
+    return { prompt: await optimizePromptWithChat(settings, messages), mode: "chat" };
+  } catch (error) {
+    errors.push(`chat: ${errorMessage(error)}`);
+  }
+  try {
+    return { prompt: await optimizePromptWithResponses(settings, messages), mode: "responses" };
+  } catch (error) {
+    errors.push(`responses: ${errorMessage(error)}`);
+  }
+  throw new Error(`提示词优化失败：${errors.join("；")}`);
 }
 
 async function optimizePromptWithChat(settings, messages) {
@@ -293,6 +304,25 @@ async function optimizePromptWithChat(settings, messages) {
   const json = await parseJson(upstream);
   assertOk(upstream, json);
   const optimized = chatMessageText(json.choices?.[0]?.message?.content);
+  if (!optimized) throw new Error("提示词优化未返回内容");
+  return stripPromptEnvelope(optimized);
+}
+
+async function optimizePromptWithResponses(settings, messages) {
+  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/responses"), settings, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(settings)
+    },
+    body: JSON.stringify({
+      model: responseModel(settings.mainModelId),
+      input: messages.map(responseTextMessage)
+    })
+  });
+  const json = await parseJson(upstream);
+  assertOk(upstream, json);
+  const optimized = responseText(json) || chatMessageText(json.choices?.[0]?.message?.content);
   if (!optimized) throw new Error("提示词优化未返回内容");
   return stripPromptEnvelope(optimized);
 }
@@ -321,6 +351,18 @@ function buildPromptOptimizationMessages(prompt, params, references) {
       ].join("\n")
     }
   ];
+}
+
+function responseTextMessage(message) {
+  return {
+    role: message.role,
+    content: [
+      {
+        type: "input_text",
+        text: String(message.content || "")
+      }
+    ]
+  };
 }
 
 async function describeReferencesForImagePrompt(settings, prompt, params, references) {
@@ -563,6 +605,13 @@ function assertOk(response, json) {
   throw new Error(typeof message === "string" ? message : JSON.stringify(message));
 }
 
+function publicOptimizeError(message) {
+  if (/upstream service temporarily unavailable/i.test(message)) {
+    return "提示词优化服务暂时不可用，请稍后重试";
+  }
+  return message;
+}
+
 function imagesResult(json, format) {
   const images = (json.data ?? []).flatMap((item) => {
     if (item.b64_json) return [asDataImage(item.b64_json, format)];
@@ -593,6 +642,20 @@ function responseImages(json, format) {
     }
   }
   return images;
+}
+
+function responseText(json) {
+  if (typeof json.output_text === "string") return json.output_text.trim();
+  const parts = [];
+  for (const item of Array.isArray(json.output) ? json.output : []) {
+    if (typeof item?.text === "string") parts.push(item.text);
+    if (typeof item?.content === "string") parts.push(item.content);
+    for (const content of Array.isArray(item?.content) ? item.content : []) {
+      if (typeof content?.text === "string") parts.push(content.text);
+      if (typeof content?.content === "string") parts.push(content.content);
+    }
+  }
+  return parts.join("\n").trim();
 }
 
 function responseImageValue(value, format) {
