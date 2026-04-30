@@ -50,12 +50,13 @@ test("builds Images API generation payload", () => {
 });
 
 test("normalizes OpenAI-compatible API base URLs", () => {
+  assert.equal(normalizeApiBaseUrl(""), "https://ccoder-production.up.railway.app/v1");
   assert.equal(normalizeApiBaseUrl("https://api.openai.com"), "https://api.openai.com/v1");
   assert.equal(normalizeApiBaseUrl("https://api.openai.com/"), "https://api.openai.com/v1");
   assert.equal(normalizeApiBaseUrl("https://api.openai.com/v1/"), "https://api.openai.com/v1");
   assert.equal(normalizeApiBaseUrl("https://api.openai.com/v1/images/generations"), "https://api.openai.com/v1");
-  assert.equal(normalizeApiBaseUrl("https://alexai.work/v1"), "https://alexai.work/v1");
-  assert.equal(normalizeApiBaseUrl("image.alexai.work"), "https://image.alexai.work/v1");
+  assert.equal(normalizeApiBaseUrl("https://ccoder-production.up.railway.app"), "https://ccoder-production.up.railway.app/v1");
+  assert.equal(normalizeApiBaseUrl("image.ccoder-production.up.railway.app"), "https://image.ccoder-production.up.railway.app/v1");
   assert.equal(normalizeApiBaseUrl("https://api.openai.com/v1/models?x=1"), "https://api.openai.com/v1");
 });
 

@@ -10,8 +10,9 @@ const dataDir = join(root, "data");
 const historyImageDir = join(dataDir, "generated-history");
 const historyStoreFile = join(dataDir, "history.json");
 const templateStore = createTemplateStore({ publicDir });
+const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const defaultSettings = {
-  apiUrl: "https://alexai.work/v1",
+  apiUrl: defaultApiUrl,
   apiKey: "",
   codexCli: false,
   apiMode: "images",
@@ -205,7 +206,10 @@ app.listen(port, host, () => {
 });
 
 function parseArgs(args) {
-  const next = { host: "127.0.0.1", port: 4174 };
+  const next = {
+    host: process.env.HOST || "0.0.0.0",
+    port: Number(process.env.PORT) || 4174
+  };
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--host" && args[index + 1]) next.host = args[index + 1];
     if (args[index] === "--port" && args[index + 1]) next.port = Number(args[index + 1]) || 4174;
@@ -367,7 +371,7 @@ async function parseJson(response) {
   } catch {
     const contentType = response.headers.get("content-type") ?? "";
     if (/html/i.test(contentType) || /^\s*<!doctype html/i.test(text) || /^\s*<html/i.test(text)) {
-      throw new Error("接口返回了网页 HTML，不是 JSON。请确认 API URL 使用 OpenAI 兼容地址，例如 https://alexai.work/v1");
+      throw new Error(`接口返回了网页 HTML，不是 JSON。请确认 API URL 使用 OpenAI 兼容地址，例如 ${defaultApiUrl}`);
     }
     throw new Error(text.slice(0, 300));
   }
@@ -625,7 +629,7 @@ function safeId(value) {
 }
 
 function normalizeApiBaseUrl(value) {
-  const trimmed = value.trim() || "https://alexai.work/v1";
+  const trimmed = value.trim() || defaultApiUrl;
   try {
     const url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
     url.search = "";

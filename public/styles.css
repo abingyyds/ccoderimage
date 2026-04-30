@@ -61,6 +61,7 @@ button {
 }
 
 .topbar,
+.internal-banner,
 .tabs,
 .filters,
 .template-summary,
@@ -75,6 +76,16 @@ button {
   border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: var(--shadow);
+}
+
+.internal-banner {
+  margin-bottom: 10px;
+  padding: 9px 14px;
+  background: rgba(169, 49, 39, 0.95);
+  color: #fffaf0;
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0;
 }
 
 .topbar {

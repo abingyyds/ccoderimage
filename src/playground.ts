@@ -59,7 +59,7 @@ export type AppState = {
 };
 
 export const defaultSettings: Settings = {
-  apiUrl: "https://alexai.work/v1",
+  apiUrl: "https://ccoder-production.up.railway.app/v1",
   apiKey: "",
   codexCli: false,
   apiMode: "images",

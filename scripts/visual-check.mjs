@@ -167,7 +167,7 @@ async function verifySettingsSaveRecovery(browser, url) {
   await page.goto(url, { waitUntil: "domcontentloaded" });
   if (pageErrors.length) throw new Error(`settings recovery: page script error: ${pageErrors.join("; ")}`);
   await clickFirst(page, "#openSettingsBtn", "settings recovery: missing settings button");
-  await page.fill("#modalApiUrl", "https://alexai.work/v1");
+  await page.fill("#modalApiUrl", "https://ccoder-production.up.railway.app/v1");
   await page.fill("#modalApiKey", "test-key-local-visual-check");
   await page.fill("#modalTimeout", "360");
   await clickFirst(page, "#modalSaveBtn", "settings recovery: missing save button");
@@ -177,7 +177,7 @@ async function verifySettingsSaveRecovery(browser, url) {
     settings: JSON.parse(localStorage.getItem("pic.native.settings") || "{}"),
     history: localStorage.getItem("pic.native.history") || ""
   }));
-  if (saved.settings.apiUrl !== "https://alexai.work/v1") throw new Error("settings recovery: API URL was not saved exactly");
+  if (saved.settings.apiUrl !== "https://ccoder-production.up.railway.app/v1") throw new Error("settings recovery: API URL was not saved exactly");
   if (saved.settings.apiKey !== "test-key-local-visual-check") throw new Error("settings recovery: API key was not saved");
   if (saved.settings.timeoutSeconds !== 360) throw new Error("settings recovery: timeout was not saved");
   if (saved.history.includes("data:image")) throw new Error("settings recovery: large history cache was not compacted");
@@ -194,14 +194,14 @@ async function verifySettingsSaveRecovery(browser, url) {
   await page.fill("#promptInput", "visual check prompt");
   await clickFirst(page, "#generateBtn", "settings recovery: missing generate button");
   await page.waitForFunction(() => document.querySelector("#statusLine")?.textContent?.includes("visual check stop"));
-  if (capturedGenerateSettings?.apiUrl !== "https://alexai.work/v1") throw new Error("settings recovery: generate request did not use saved API URL");
+  if (capturedGenerateSettings?.apiUrl !== "https://ccoder-production.up.railway.app/v1") throw new Error("settings recovery: generate request did not use saved API URL");
   if (capturedGenerateSettings?.apiKey !== "test-key-local-visual-check") throw new Error("settings recovery: generate request did not use saved API key");
   const historyText = await page.locator("#historyList").textContent();
   if (!historyText?.includes("接口已配置")) throw new Error("settings recovery: history did not show compact settings summary");
-  if (historyText.includes("https://alexai.work/v1")) throw new Error("settings recovery: history exposed the API URL");
+  if (historyText.includes("https://ccoder-production.up.railway.app/v1")) throw new Error("settings recovery: history exposed the API URL");
   if (historyText.includes("test-key-local-visual-check")) throw new Error("settings recovery: history leaked the API key");
   const statusText = await page.locator("#statusLine").textContent();
-  if (statusText?.includes("https://alexai.work/v1")) throw new Error("settings recovery: status exposed the API URL");
+  if (statusText?.includes("https://ccoder-production.up.railway.app/v1")) throw new Error("settings recovery: status exposed the API URL");
   await page.close();
   console.log("settings save recovery passed");
 }

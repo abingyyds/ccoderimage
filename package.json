@@ -26,7 +26,7 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch server/index.mjs --host 127.0.0.1 --port 4174",
-    "start": "node server/index.mjs --host 127.0.0.1 --port 4174",
+    "start": "node server/index.mjs",
     "open": "node scripts/open-workbench.mjs",
     "assets:brand": "node scripts/generate-brand-assets.mjs",
     "build": "node scripts/build-node-app.mjs",

@@ -1,6 +1,6 @@
 # 墨境图像工作台
 
-专门为 **GPT Image 2 / `gpt-image-2`** 做的本地图片生成工具。它把提示词模板、参考图上传、生成参数、历史记录、图片预览和一键保存放在一个紧凑界面里，默认填入 `https://alexai.work/v1`，也可以连接 OpenAI 官方 API 或各种 **OpenAI 兼容中转站 API / Relay API**。
+专门为 **GPT Image 2 / `gpt-image-2`** 做的本地图片生成工具。它把提示词模板、参考图上传、生成参数、历史记录、图片预览和一键保存放在一个紧凑界面里，默认填入 `https://ccoder-production.up.railway.app/v1`，也可以连接 OpenAI 官方 API 或各种 **OpenAI 兼容中转站 API / Relay API**。
 
 English keywords: GPT Image 2, `gpt-image-2`, OpenAI-compatible image generation, prompt templates, API relay, image generation workbench.
 
@@ -16,7 +16,7 @@ English keywords: GPT Image 2, `gpt-image-2`, OpenAI-compatible image generation
 ## 核心功能
 
 - **GPT Image 2 优先**：默认图像模型是 `gpt-image-2`。
-- **兼容中转站 API**：默认 Base URL 是 `https://alexai.work/v1`；只要接口兼容 OpenAI `/v1`，也可以换成自己的 Base URL 和 API Key。
+- **兼容中转站 API**：默认 Base URL 是 `https://ccoder-production.up.railway.app/v1`；只要接口兼容 OpenAI `/v1`，也可以换成自己的 Base URL 和 API Key。
 - **两种调用模式**：支持 `/v1/images/generations`、`/v1/images/edits`，也支持 `/v1/responses` + `image_generation` 工具模式。
 - **2300+ 个提示词模板**：内置模板库，支持搜索、分类、精选筛选，分类会显示数量。
 - **轻量模板加载**：列表只加载摘要，点“使用模板”时再取完整 prompt。
@@ -43,16 +43,12 @@ macOS 可以直接双击：
 
 打开页面后点右上角“设置”，填写：
 
-- `API URL`：默认 `https://alexai.work/v1`，也可换成 OpenAI 官方或其他中转站 Base URL，例如 `https://api.openai.com/v1`
+- `API URL`：默认 `https://ccoder-production.up.railway.app/v1`，也可换成 OpenAI 官方或其他中转站 Base URL，例如 `https://api.openai.com/v1`
 - `API Key`：你的 Key
 - `接口模式`：普通图片接口选 `images`，Responses 工具模式选 `responses`
 - `图像模型`：默认 `gpt-image-2`
 
-API Key 只保存在浏览器 `localStorage`，不会写入仓库。没有 Key 的用户，可以通过这个入口注册获取 Key：
-
-```text
-https://alexai.work/register?aff=6019d650
-```
+API Key 只保存在浏览器 `localStorage`，不会写入仓库。内测用户请使用 ccoder 分配的 API Key。
 
 ## 中转站 API 配置
 
@@ -66,7 +62,7 @@ https://alexai.work/register?aff=6019d650
 常见配置方式：
 
 ```text
-API URL: https://alexai.work/v1
+API URL: https://ccoder-production.up.railway.app/v1
 API Key: your-relay-key
 接口模式: images
 图像模型: gpt-image-2
