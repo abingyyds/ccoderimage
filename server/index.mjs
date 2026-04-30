@@ -91,8 +91,8 @@ app.post("/api/optimize-prompt", async (request, response) => {
     return;
   }
   try {
-    const optimizedPrompt = await optimizePromptWithChat(settings, prompt, params, references);
-    response.json({ ok: true, prompt: optimizedPrompt });
+    const result = await optimizePromptText(settings, prompt, params, references);
+    response.json({ ok: true, ...result });
   } catch (error) {
     response.status(502).json({ ok: false, message: errorMessage(error) });
   }
@@ -265,7 +265,12 @@ function sanitizeParams(value) {
   };
 }
 
-async function optimizePromptWithChat(settings, prompt, params, references) {
+async function optimizePromptText(settings, prompt, params, references) {
+  const messages = buildPromptOptimizationMessages(prompt, params, references);
+  return { prompt: await optimizePromptWithChat(settings, messages), mode: "chat" };
+}
+
+async function optimizePromptWithChat(settings, messages) {
   const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/chat/completions"), settings, {
     method: "POST",
     headers: {
@@ -273,8 +278,8 @@ async function optimizePromptWithChat(settings, prompt, params, references) {
       Authorization: `Bearer ${settings.apiKey.trim()}`
     },
     body: JSON.stringify({
-      model: settings.mainModelId.trim() || "gpt-5.5",
-      messages: buildPromptOptimizationMessages(prompt, params, references)
+      model: responseModel(settings.mainModelId),
+      messages
     })
   });
   const json = await parseJson(upstream);
