@@ -551,25 +551,12 @@ textarea:focus {
   padding: 6px 8px;
 }
 
-.prompt-optimize-option {
+.prompt-tools {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 34px;
+  justify-content: flex-end;
   margin: 8px 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 6px 10px;
-  background: rgba(232, 242, 236, 0.68);
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.prompt-optimize-option input {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--jade);
+  min-height: 34px;
 }
 
 .reference-box {

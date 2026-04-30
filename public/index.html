@@ -9,7 +9,7 @@
     <link rel="icon" href="./assets/mojing-icon-192.png" type="image/png" />
     <link rel="apple-touch-icon" href="./assets/mojing-icon-192.png" />
     <meta property="og:image" content="./assets/mojing-share-card.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260501-reference-fallback" />
+    <link rel="stylesheet" href="./styles.css?v=20260501-optimize-button" />
   </head>
   <body>
     <main class="app-shell">
@@ -64,7 +64,7 @@
             <label><span>数量</span><input id="countInput" min="1" max="4" type="number" value="1" /></label>
             <label><span>尺寸</span><input id="sizeInput" type="text" value="auto" readonly /></label>
           </div>
-          <label class="prompt-optimize-option"><input id="promptOptimizeInput" type="checkbox" /><span>提示词优化处理</span></label>
+          <div class="prompt-tools"><button class="ghost-btn" id="optimizePromptBtn" type="button">优化提示词</button></div>
           <section class="reference-box">
             <div class="section-head compact">
               <div><h3>参考图</h3><p>支持多图上传，随生成请求提交</p></div>
@@ -90,6 +90,6 @@
       </section>
     </main>
     <div class="modal-root" id="modalRoot" hidden></div>
-    <script src="./app.js?v=20260501-reference-fallback" defer></script>
+    <script src="./app.js?v=20260501-optimize-button" defer></script>
   </body>
 </html>

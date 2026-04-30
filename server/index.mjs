@@ -77,6 +77,27 @@ app.post("/api/test-connection", async (request, response) => {
   }
 });
 
+app.post("/api/optimize-prompt", async (request, response) => {
+  const settings = sanitizeSettings(request.body?.settings);
+  const prompt = String(request.body?.prompt || "").trim();
+  const params = sanitizeParams(request.body?.params);
+  const references = Array.isArray(request.body?.references) ? request.body.references : [];
+  if (!settings.apiKey.trim()) {
+    response.status(400).json({ ok: false, message: "请先配置 API" });
+    return;
+  }
+  if (!prompt) {
+    response.status(400).json({ ok: false, message: "请输入提示词" });
+    return;
+  }
+  try {
+    const optimizedPrompt = await optimizePromptWithChat(settings, prompt, params, references);
+    response.json({ ok: true, prompt: optimizedPrompt });
+  } catch (error) {
+    response.status(502).json({ ok: false, message: errorMessage(error) });
+  }
+});
+
 app.post("/api/generate", async (request, response) => {
   const settings = sanitizeSettings(request.body?.settings);
   const prompt = String(request.body?.prompt || "").trim();
@@ -104,9 +125,6 @@ app.post("/api/generate", async (request, response) => {
       images,
       error: "",
       revisedPrompt: result.revisedPrompt || "",
-      promptOptimization: result.promptOptimization || null,
-      referenceMode: result.referenceMode || "",
-      referenceWarning: result.referenceWarning || "",
       createdAt: createdAt.getTime(),
       finishedAt: Date.now()
     };
@@ -114,7 +132,6 @@ app.post("/api/generate", async (request, response) => {
     response.json({ ok: true, ...result, images, historySaved });
   } catch (error) {
     const message = errorMessage(error);
-    const promptOptimization = normalizePromptOptimization(error?.promptOptimization);
     await saveHistoryTaskSafely({
       id: taskId,
       prompt,
@@ -124,11 +141,10 @@ app.post("/api/generate", async (request, response) => {
       images: [],
       error: message,
       revisedPrompt: "",
-      promptOptimization,
       createdAt: createdAt.getTime(),
       finishedAt: Date.now()
     });
-    response.status(502).json({ ok: false, message, promptOptimization, stage: error?.stage || "" });
+    response.status(502).json({ ok: false, message });
   }
 });
 
@@ -245,120 +261,79 @@ function sanitizeParams(value) {
     outputFormat,
     compression: outputFormat === "png" ? "" : clampNumber(Number(params.compression) || 100, 0, 100),
     moderation: params.moderation === "low" ? "low" : "auto",
-    count: clampNumber(Number(params.count) || 1, 1, 4),
-    optimizePrompt: Boolean(params.optimizePrompt)
+    count: clampNumber(Number(params.count) || 1, 1, 4)
   };
+}
+
+async function optimizePromptWithChat(settings, prompt, params, references) {
+  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/chat/completions"), settings, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${settings.apiKey.trim()}`
+    },
+    body: JSON.stringify({
+      model: settings.mainModelId.trim() || "gpt-5.5",
+      messages: buildPromptOptimizationMessages(prompt, params, references)
+    })
+  });
+  const json = await parseJson(upstream);
+  assertOk(upstream, json);
+  const optimized = chatMessageText(json.choices?.[0]?.message?.content);
+  if (!optimized) throw new Error("提示词优化未返回内容");
+  return stripPromptEnvelope(optimized);
+}
+
+function buildPromptOptimizationMessages(prompt, params, references) {
+  const referenceNote = references.length
+    ? `用户已上传 ${references.length} 张参考图。你不能读取图片像素，但优化提示词时要保留“参考图风格/构图/主体特征”的意图。`
+    : "用户未上传参考图。";
+  return [
+    {
+      role: "system",
+      content: [
+        "你是图片生成提示词优化器。",
+        "把用户的原始提示词改写成更适合图像生成模型的高质量提示词。",
+        "保留用户意图、主体、文字内容、语言、数量和限制，不要加入冲突元素。",
+        "补充有帮助的画面细节、构图、光线、材质、镜头、风格和质量约束。",
+        "只输出优化后的提示词本身，不要解释，不要 Markdown。"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: [
+        `原始提示词：${prompt}`,
+        `图片参数：尺寸 ${params.size}，质量 ${params.quality}，格式 ${params.outputFormat}，数量 ${params.count}`,
+        referenceNote
+      ].join("\n")
+    }
+  ];
+}
+
+function chatMessageText(content) {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content.map((part) => typeof part === "string" ? part : part?.text || "").join("\n").trim();
+  }
+  return "";
+}
+
+function stripPromptEnvelope(value) {
+  return String(value)
+    .replace(/^```(?:text|markdown)?/i, "")
+    .replace(/```$/i, "")
+    .replace(/^\s*(优化后的提示词|提示词|Prompt)\s*[:：]\s*/i, "")
+    .trim();
 }
 
 async function generateOpenAIImage(settings, prompt, params, references) {
-  let finalPrompt = prompt;
-  let promptOptimization = null;
-  let promptResult = {};
-  if (params.optimizePrompt) {
-    const optimization = await optimizeImagePrompt(settings, prompt, params, references);
-    finalPrompt = optimization.prompt;
-    promptOptimization = optimization.ok
-      ? { status: optimization.source === "local" ? "local" : "optimized", message: optimization.message || "" }
-      : { status: "skipped", message: optimization.message };
-    promptResult = optimization.ok
-      ? { revisedPrompt: finalPrompt, optimizedPrompt: finalPrompt, promptOptimization }
-      : { promptOptimization };
+  if (settings.apiMode === "responses") {
+    return generateViaResponsesApi(settings, prompt, params, references);
   }
-  try {
-    return { ...(await runImageGeneration(settings, finalPrompt, params, references)), ...promptResult };
-  } catch (error) {
-    if (params.optimizePrompt && finalPrompt !== prompt && isTransientUpstream(error)) {
-      try {
-        const fallbackOptimization = {
-          status: "fallback",
-          message: "优化后的提示词生成失败，已使用原提示词重试"
-        };
-        return {
-          ...(await runImageGeneration(settings, prompt, params, references)),
-          optimizedPrompt: finalPrompt,
-          promptOptimization: fallbackOptimization
-        };
-      } catch (retryError) {
-        retryError.promptOptimization = promptOptimization;
-        retryError.stage = "image";
-        throw retryError;
-      }
-    }
-    error.promptOptimization = promptOptimization;
-    error.stage = "image";
-    throw error;
+  if (references.length > 0) {
+    return editViaImagesApi(settings, prompt, params, references);
   }
-}
-
-async function runImageGeneration(settings, prompt, params, references) {
-  if (references.length > 0) return generateWithReferences(settings, prompt, params, references);
-  if (settings.apiMode === "responses") return generateViaResponsesApi(settings, prompt, params, references);
   return generateViaImagesApi(settings, prompt, params);
-}
-
-async function generateWithReferences(settings, prompt, params, references) {
-  const errors = [];
-  try {
-    return {
-      ...(await generateViaResponsesApi(settings, prompt, params, references)),
-      referenceMode: "responses"
-    };
-  } catch (error) {
-    errors.push(`responses: ${errorMessage(error)}`);
-    if (!isEndpointUnsupported(error) && !isTransientUpstream(error)) throw error;
-  }
-  try {
-    return {
-      ...(await editViaImagesApi(settings, prompt, params, references)),
-      referenceMode: "edits"
-    };
-  } catch (error) {
-    errors.push(`edits: ${errorMessage(error)}`);
-    if (!isTransientUpstream(error) && !isEndpointUnsupported(error)) throw error;
-  }
-  return {
-    ...(await generateViaImagesApi(settings, referenceFallbackPrompt(prompt, references), params)),
-    referenceMode: "text-fallback",
-    referenceWarning: `参考图上游暂不可用，已改用文字提示生成。${errors.join("；").slice(0, 360)}`
-  };
-}
-
-async function optimizeImagePrompt(settings, prompt, params, references) {
-  return {
-    ok: true,
-    prompt: localOptimizeImagePrompt(prompt, params, references),
-    source: "local",
-    message: "远程 GPT 提示词优化已临时关闭，避免上游不可用影响图片生成"
-  };
-}
-
-function localOptimizeImagePrompt(prompt, params, references) {
-  const referenceLine = references.length
-    ? `参考图要求：结合 ${references.length} 张参考图，保留参考图中的关键主体、结构、姿态、颜色和可识别特征。`
-    : "";
-  return [
-    prompt,
-    "画面优化要求：主体清晰，构图完整，层次丰富，细节准确，光线自然，色彩协调，材质真实，边缘干净。",
-    "生成约束：严格保留原始提示词中的人物、产品、品牌、文字、数量、动作、场景和风格要求，不添加冲突元素，不生成水印、乱码文字或多余边框。",
-    `输出倾向：适配 ${params.size} 尺寸，${params.quality} 质量，适合高质量图片生成。`,
-    referenceLine
-  ].filter(Boolean).join("\n");
-}
-
-function referenceFallbackPrompt(prompt, references) {
-  const names = references.map((reference) => reference?.name).filter(Boolean).slice(0, 6).join("、");
-  return [
-    prompt,
-    `用户上传了 ${references.length} 张参考图${names ? `（${names}）` : ""}。当前参考图上游暂不可用，请尽量根据用户提示生成相近效果，保持主体、风格、构图和细节要求一致。`
-  ].join("\n");
-}
-
-function isTransientUpstream(error) {
-  return /upstream|temporarily unavailable|timeout|timed out|econnreset|etimedout|502|503|504|暂不可用|超时/i.test(errorMessage(error));
-}
-
-function isEndpointUnsupported(error) {
-  return /404|405|not found|unsupported|cannot\s+(get|post)|不支持|接口不存在/i.test(errorMessage(error));
 }
 
 async function generateViaImagesApi(settings, prompt, params) {
@@ -424,7 +399,8 @@ function buildImagesGenerationBody(settings, prompt, params) {
 
 function buildResponsesBody(settings, prompt, params, references) {
   const tool = {
-    type: settings.toolName.trim() || "image_generation"
+    type: settings.toolName.trim() || "image_generation",
+    action: references.length > 0 ? "edit" : "generate"
   };
   addImageOptions(tool, params);
   return {
@@ -542,9 +518,6 @@ function normalizeClientHistoryTask(task) {
     images: Array.isArray(task.images) ? task.images : Array.isArray(task.outputImages) ? task.outputImages : [],
     error: String(task.error || ""),
     revisedPrompt: String(task.revisedPrompt || task.revised_prompt || ""),
-    promptOptimization: normalizePromptOptimization(task.promptOptimization),
-    referenceMode: normalizeReferenceMode(task.referenceMode),
-    referenceWarning: String(task.referenceWarning || "").slice(0, 420),
     createdAt: safeDate(task.createdAt, new Date()).getTime(),
     finishedAt: task.finishedAt ? safeDate(task.finishedAt, new Date()).getTime() : null
   };
@@ -709,9 +682,6 @@ function normalizeHistoryRecord(task) {
     images: Array.isArray(task?.images) ? task.images.map(String) : [],
     error: String(task?.error || ""),
     revisedPrompt: String(task?.revisedPrompt || task?.revised_prompt || ""),
-    promptOptimization: normalizePromptOptimization(task?.promptOptimization),
-    referenceMode: normalizeReferenceMode(task?.referenceMode),
-    referenceWarning: String(task?.referenceWarning || "").slice(0, 420),
     createdAt: safeDate(task?.createdAt, new Date()).getTime(),
     finishedAt: task?.finishedAt ? safeDate(task.finishedAt, new Date()).getTime() : null,
     deletedAt: task?.deletedAt ? safeDate(task.deletedAt, new Date()).getTime() : null
@@ -721,20 +691,6 @@ function normalizeHistoryRecord(task) {
 function trimHistoryStore(history) {
   history.sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0));
   if (history.length > 300) history.splice(300);
-}
-
-function normalizePromptOptimization(value) {
-  if (!value || typeof value !== "object") return null;
-  const status = ["optimized", "skipped", "fallback", "local"].includes(value.status) ? value.status : "";
-  if (!status) return null;
-  return {
-    status,
-    message: String(value.message || "").slice(0, 240)
-  };
-}
-
-function normalizeReferenceMode(value) {
-  return ["responses", "edits", "text-fallback"].includes(value) ? value : "";
 }
 
 function historyReferences(references) {

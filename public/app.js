@@ -5,14 +5,14 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-reference-fallback";
+const appVersion = "20260501-optimize-button";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
 
 const defaults = {
   settings: { apiUrl: defaultApiUrl, apiKey: "", apiMode: "images", mainModelId: "gpt-5.5", modelId: "gpt-image-2", timeoutSeconds: 120 },
-  params: { size: "auto", quality: "auto", outputFormat: "png", count: 1, optimizePrompt: false }
+  params: { size: "auto", quality: "auto", outputFormat: "png", count: 1 }
 };
 
 const state = {
@@ -38,7 +38,7 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const id of [
     "statusLine", "templatesPanel", "generatePanel", "templateSearch", "categoryFilter", "featuredOnly",
     "templateGrid", "templateCount", "templateHint", "loadMoreBtn", "promptInput", "qualitySelect",
-    "formatSelect", "countInput", "sizeInput", "promptOptimizeInput", "referenceInput", "referenceList", "generateBtn",
+    "formatSelect", "countInput", "sizeInput", "optimizePromptBtn", "referenceInput", "referenceList", "generateBtn",
     "generationTimer", "historyList", "historyCount", "clearHistoryBtn", "deletedHistoryBtn", "openSettingsBtn", "testConnectionBtn",
     "openSizeBtn", "modalRoot"
   ]) dom[id] = document.getElementById(id);
@@ -77,7 +77,7 @@ function bindEvents() {
   dom.qualitySelect.addEventListener("change", () => saveParams({ quality: dom.qualitySelect.value }));
   dom.formatSelect.addEventListener("change", () => saveParams({ outputFormat: dom.formatSelect.value }));
   dom.countInput.addEventListener("input", () => saveParams({ count: clamp(Number(dom.countInput.value), 1, 4) }));
-  dom.promptOptimizeInput.addEventListener("change", () => saveParams({ optimizePrompt: dom.promptOptimizeInput.checked }));
+  dom.optimizePromptBtn.addEventListener("click", () => void optimizePrompt());
   dom.referenceInput.addEventListener("change", () => void addReferences());
   dom.generateBtn.addEventListener("click", () => void generateImage());
   dom.clearHistoryBtn.addEventListener("click", clearHistory);
@@ -323,14 +323,43 @@ function syncControls() {
   dom.formatSelect.value = state.params.outputFormat;
   dom.countInput.value = String(state.params.count);
   dom.sizeInput.value = state.params.size;
-  dom.promptOptimizeInput.checked = Boolean(state.params.optimizePrompt);
 }
 
 function saveParams(patch) {
   const next = { ...state.params, ...patch };
-  state.params = { ...next, count: clamp(Number(next.count), 1, 4), optimizePrompt: Boolean(next.optimizePrompt) };
+  state.params = { ...next, count: clamp(Number(next.count), 1, 4) };
   tryWriteStore(keys.params, state.params);
   syncControls();
+}
+
+async function optimizePrompt() {
+  const prompt = state.prompt.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (!prompt) {
+    status("请输入提示词");
+    dom.promptInput.focus();
+    return;
+  }
+  dom.optimizePromptBtn.disabled = true;
+  status("提示词优化中");
+  try {
+    const response = await fetch("/api/optimize-prompt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, settings: state.settings, params: state.params, references: state.references })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) throw new Error(data.message || data.error || `${response.status} ${response.statusText}`);
+    const optimized = String(data.prompt || data.optimizedPrompt || "").trim();
+    if (!optimized) throw new Error("提示词优化未返回内容");
+    state.prompt = optimized;
+    dom.promptInput.value = optimized;
+    dom.promptInput.focus();
+    status("提示词已优化，可继续修改后生成");
+  } catch (error) {
+    status(`提示词优化失败：${errorMessage(error)}`);
+  } finally {
+    dom.optimizePromptBtn.disabled = false;
+  }
 }
 
 async function addReferences() {
@@ -381,7 +410,7 @@ async function generateImage() {
   persistHistory();
   renderHistory();
   startGenerationTimer(task);
-  status(`${state.params.optimizePrompt ? "提示词优化中" : "生成请求已提交"}：${task.settingsSummary}，耗时 00:00`);
+  status(`生成请求已提交：${task.settingsSummary}，耗时 00:00`);
   try {
     const response = await fetch("/api/generate", {
       method: "POST",
@@ -389,19 +418,11 @@ async function generateImage() {
       body: JSON.stringify({ taskId: task.id, createdAt: task.createdAt, prompt, settings: state.settings, params: state.params, references: state.references })
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      task.promptOptimization = data.promptOptimization || null;
-      throw new Error(data.message || data.error || `${response.status} ${response.statusText}`);
-    }
+    if (!response.ok) throw new Error(data.message || data.error || `${response.status} ${response.statusText}`);
     task.images = normalizeImages(data);
-    task.revisedPrompt = data.optimizedPrompt || data.revisedPrompt || data.revised_prompt || "";
-    task.promptOptimization = data.promptOptimization || null;
-    task.referenceMode = data.referenceMode || "";
-    task.referenceWarning = data.referenceWarning || "";
+    task.revisedPrompt = data.revisedPrompt || data.revised_prompt || "";
     task.status = "succeeded";
-    const optimizeStatus = promptOptimizationStatusText(data.promptOptimization);
-    const referenceStatus = data.referenceMode === "text-fallback" ? "，参考图上游不可用，已改用文字生成" : "";
-    status(task.images.length ? `生成完成：${task.images.length} 张，耗时 ${formatElapsed(task)}${optimizeStatus}${referenceStatus}${data.historySaved === false ? "，历史未入库" : ""}` : `生成完成，但未返回图片，耗时 ${formatElapsed(task)}${optimizeStatus}${referenceStatus}`);
+    status(task.images.length ? `生成完成：${task.images.length} 张，耗时 ${formatElapsed(task)}${data.historySaved === false ? "，历史未入库" : ""}` : `生成完成，但未返回图片，耗时 ${formatElapsed(task)}`);
   } catch (error) {
     task.status = "failed";
     task.error = errorMessage(error);
@@ -538,16 +559,13 @@ function normalizeHistoryTask(task) {
   return {
     id: String(task.id || `task-${Date.now().toString(36)}`),
     prompt: String(task.prompt || ""),
-    params: { ...defaults.params, ...(task.params || {}), optimizePrompt: Boolean(task.params?.optimizePrompt) },
+    params: { ...defaults.params, ...(task.params || {}) },
     references: Array.isArray(task.references) ? task.references : [],
     settingsSummary: String(task.settingsSummary || task.settingsSnapshot || ""),
     status: ["running", "succeeded", "failed"].includes(task.status) ? task.status : "succeeded",
     images: Array.isArray(task.images) ? task.images : [],
     error: String(task.error || ""),
     revisedPrompt: String(task.revisedPrompt || ""),
-    promptOptimization: task.promptOptimization && typeof task.promptOptimization === "object" ? task.promptOptimization : null,
-    referenceMode: String(task.referenceMode || ""),
-    referenceWarning: String(task.referenceWarning || ""),
     createdAt: Number(task.createdAt) || Date.now(),
     finishedAt: task.finishedAt ? Number(task.finishedAt) : null,
     deletedAt: task.deletedAt ? Number(task.deletedAt) : null
@@ -567,8 +585,6 @@ function historyCard(task) {
     ? `<button class="image-preview-btn" data-preview-task="${attr(task.id)}" data-preview-index="0" type="button" aria-label="预览图片"><img src="${attr(task.images[0])}" alt="${attr(task.prompt)}" /><span>点击放大</span></button>`
     : `<div class="history-placeholder">${task.status === "running" ? "生成中" : "无图片"}</div>`;
   const settingsPart = task.settingsSummary ? `${esc(task.settingsSummary)} · ` : "";
-  const optimizePart = task.params.optimizePrompt ? ` · ${promptOptimizationLabel(task)}` : "";
-  const referencePart = task.referenceMode === "text-fallback" ? " · 参考图已转文字兜底" : "";
   const saveButton = task.images?.[0] ? `<button type="button" data-download-task="${attr(task.id)}" data-download-index="0">保存</button>` : "";
   const activeActions = `${saveButton}<button type="button" data-reuse-task="${attr(task.id)}">复用</button><button type="button" data-delete-task="${attr(task.id)}">删除</button>`;
   const deletedActions = `<button type="button" data-restore-task="${attr(task.id)}">恢复</button><button type="button" data-purge-task="${attr(task.id)}">清除</button>`;
@@ -578,26 +594,10 @@ function historyCard(task) {
       <div class="history-body">
         <div class="meta-row"><span>${task.status === "succeeded" ? "成功" : task.status === "failed" ? "失败" : "生成中"}</span><span data-elapsed-task="${attr(task.id)}">耗时 ${formatElapsed(task)}</span><span>${time(task.createdAt)}</span></div>
         <p>${esc(task.error || task.prompt)}</p>
-        <small>${settingsPart}${esc(task.params.size)} · ${esc(task.params.quality)} · ${esc(task.params.outputFormat)} · ${task.params.count} 张${optimizePart}${referencePart}</small>
+        <small>${settingsPart}${esc(task.params.size)} · ${esc(task.params.quality)} · ${esc(task.params.outputFormat)} · ${task.params.count} 张</small>
         <div class="row-actions">${deletedMode ? deletedActions : activeActions}</div>
       </div>
     </article>`;
-}
-
-function promptOptimizationLabel(task) {
-  if (task.promptOptimization?.status === "skipped") return "提示词优化跳过";
-  if (task.promptOptimization?.status === "fallback") return "优化后失败，已用原提示词";
-  if (task.promptOptimization?.status === "local") return "提示词已本地优化";
-  if (task.promptOptimization?.status === "optimized" || task.revisedPrompt) return "提示词已优化";
-  return "提示词优化";
-}
-
-function promptOptimizationStatusText(value) {
-  if (value?.status === "skipped") return "，提示词优化跳过";
-  if (value?.status === "fallback") return "，优化后失败，已用原提示词";
-  if (value?.status === "local") return "，提示词已本地优化";
-  if (value?.status === "optimized") return "，提示词已优化";
-  return "";
 }
 
 function openImagePreview(taskId, imageIndex = 0) {

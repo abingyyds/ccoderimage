@@ -23,10 +23,9 @@ test("normalizes prompts and blocks missing API key", () => {
 });
 
 test("clamps parameter values", () => {
-  const params = updateParams(defaultParams, { count: 9, compression: 140, optimizePrompt: true });
+  const params = updateParams(defaultParams, { count: 9, compression: 140 });
   assert.equal(params.count, 4);
   assert.equal(params.compression, 100);
-  assert.equal(params.optimizePrompt, true);
 });
 
 test("creates and filters mock tasks", () => {
@@ -72,7 +71,7 @@ test("builds Responses API image_generation payload", () => {
   assert.deepEqual(body.tool_choice, { type: "image_generation" });
   const tools = body.tools as Array<Record<string, unknown>>;
   assert.equal(tools[0]?.type, "image_generation");
-  assert.equal("action" in (tools[0] || {}), false);
+  assert.equal(tools[0]?.action, "edit");
 });
 
 test("parses deployed Chinese prompt templates", () => {
