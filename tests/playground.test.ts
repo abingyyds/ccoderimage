@@ -71,7 +71,9 @@ test("builds Responses API image_generation payload", () => {
   assert.deepEqual(body.tool_choice, { type: "image_generation" });
   const tools = body.tools as Array<Record<string, unknown>>;
   assert.equal(tools[0]?.type, "image_generation");
-  assert.equal(tools[0]?.action, "edit");
+  assert.equal("action" in (tools[0] || {}), false);
+  const input = body.input as Array<{ content?: Array<Record<string, unknown>> }>;
+  assert.deepEqual(input[0]?.content?.[1], { type: "input_image", image_url: "data:image/png;base64,AAAA" });
 });
 
 test("parses deployed Chinese prompt templates", () => {

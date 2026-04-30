@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-optimize-diagnostics";
+const appVersion = "20260501-reference-fix";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
@@ -347,7 +347,7 @@ async function optimizePrompt() {
     const response = await fetch("/api/optimize-prompt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, settings: state.settings, params: state.params, references: state.references })
+      body: JSON.stringify({ prompt, settings: state.settings, params: state.params, references: requestReferences() })
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.ok === false) throw new Error(data.message || data.error || `${response.status} ${response.statusText}`);
@@ -381,7 +381,7 @@ async function addReferences() {
   const existing = new Set(state.references.map((reference) => reference.sourceKey).filter(Boolean));
   const fresh = supported.filter((file) => !existing.has(referenceFileKey(file)));
   const refs = await Promise.all(fresh.map(readFile));
-  state.references.push(...refs);
+  state.references.push(...refs.filter((reference) => reference.dataUrl));
   dom.referenceInput.value = "";
   renderReferences();
   if (skipped) {
@@ -416,6 +416,7 @@ function referenceFileKey(file) {
 }
 
 function renderReferences() {
+  state.references = requestReferences();
   if (!state.references.length) {
     dom.referenceList.innerHTML = `<div class="empty-inline">尚未上传参考图</div>`;
     return;
@@ -434,6 +435,24 @@ function renderReferences() {
   });
 }
 
+function requestReferences() {
+  return (Array.isArray(state.references) ? state.references : []).filter((reference) => {
+    return reference?.dataUrl && isSupportedReferenceDataUrl(reference.dataUrl);
+  });
+}
+
+function referenceSummary(reference) {
+  return {
+    id: String(reference.id || ""),
+    name: String(reference.name || "reference.png")
+  };
+}
+
+function isSupportedReferenceDataUrl(dataUrl) {
+  const mime = String(dataUrl || "").match(/^data:([^;,]+)[;,]/i)?.[1]?.toLowerCase() || "";
+  return ["image/jpeg", "image/png", "image/webp"].includes(mime);
+}
+
 async function generateImage() {
   const prompt = state.prompt.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   if (!prompt) {
@@ -441,7 +460,8 @@ async function generateImage() {
     dom.promptInput.focus();
     return;
   }
-  const task = { id: `task-${Date.now().toString(36)}`, prompt, params: { ...state.params }, references: [...state.references], settingsSummary: settingsSummary(state.settings), status: "running", createdAt: Date.now(), images: [], error: "" };
+  const references = requestReferences();
+  const task = { id: `task-${Date.now().toString(36)}`, prompt, params: { ...state.params }, references: references.map(referenceSummary), settingsSummary: settingsSummary(state.settings), status: "running", createdAt: Date.now(), images: [], error: "" };
   state.history.unshift(task);
   persistHistory();
   renderHistory();
@@ -451,14 +471,16 @@ async function generateImage() {
     const response = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taskId: task.id, createdAt: task.createdAt, prompt, settings: state.settings, params: state.params, references: state.references })
+      body: JSON.stringify({ taskId: task.id, createdAt: task.createdAt, prompt, settings: state.settings, params: state.params, references })
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.message || data.error || `${response.status} ${response.statusText}`);
     task.images = normalizeImages(data);
     task.revisedPrompt = data.revisedPrompt || data.revised_prompt || "";
+    task.referenceMode = data.referenceMode || "";
     task.status = "succeeded";
-    status(task.images.length ? `生成完成：${task.images.length} 张，耗时 ${formatElapsed(task)}${data.historySaved === false ? "，历史未入库" : ""}` : `生成完成，但未返回图片，耗时 ${formatElapsed(task)}`);
+    const referenceStatus = task.referenceMode ? `，参考图模式 ${task.referenceMode}` : "";
+    status(task.images.length ? `生成完成：${task.images.length} 张，耗时 ${formatElapsed(task)}${referenceStatus}${data.historySaved === false ? "，历史未入库" : ""}` : `生成完成，但未返回图片，耗时 ${formatElapsed(task)}${referenceStatus}`);
   } catch (error) {
     task.status = "failed";
     task.error = errorMessage(error);
@@ -602,6 +624,7 @@ function normalizeHistoryTask(task) {
     images: Array.isArray(task.images) ? task.images : [],
     error: String(task.error || ""),
     revisedPrompt: String(task.revisedPrompt || ""),
+    referenceMode: String(task.referenceMode || ""),
     createdAt: Number(task.createdAt) || Date.now(),
     finishedAt: task.finishedAt ? Number(task.finishedAt) : null,
     deletedAt: task.deletedAt ? Number(task.deletedAt) : null
@@ -621,6 +644,7 @@ function historyCard(task) {
     ? `<button class="image-preview-btn" data-preview-task="${attr(task.id)}" data-preview-index="0" type="button" aria-label="预览图片"><img src="${attr(task.images[0])}" alt="${attr(task.prompt)}" /><span>点击放大</span></button>`
     : `<div class="history-placeholder">${task.status === "running" ? "生成中" : "无图片"}</div>`;
   const settingsPart = task.settingsSummary ? `${esc(task.settingsSummary)} · ` : "";
+  const referencePart = task.referenceMode ? ` · 参考图 ${esc(task.referenceMode)}` : "";
   const saveButton = task.images?.[0] ? `<button type="button" data-download-task="${attr(task.id)}" data-download-index="0">保存</button>` : "";
   const activeActions = `${saveButton}<button type="button" data-reuse-task="${attr(task.id)}">复用</button><button type="button" data-delete-task="${attr(task.id)}">删除</button>`;
   const deletedActions = `<button type="button" data-restore-task="${attr(task.id)}">恢复</button><button type="button" data-purge-task="${attr(task.id)}">清除</button>`;
@@ -630,7 +654,7 @@ function historyCard(task) {
       <div class="history-body">
         <div class="meta-row"><span>${task.status === "succeeded" ? "成功" : task.status === "failed" ? "失败" : "生成中"}</span><span data-elapsed-task="${attr(task.id)}">耗时 ${formatElapsed(task)}</span><span>${time(task.createdAt)}</span></div>
         <p>${esc(task.error || task.prompt)}</p>
-        <small>${settingsPart}${esc(task.params.size)} · ${esc(task.params.quality)} · ${esc(task.params.outputFormat)} · ${task.params.count} 张</small>
+        <small>${settingsPart}${esc(task.params.size)} · ${esc(task.params.quality)} · ${esc(task.params.outputFormat)} · ${task.params.count} 张${referencePart}</small>
         <div class="row-actions">${deletedMode ? deletedActions : activeActions}</div>
       </div>
     </article>`;
@@ -703,12 +727,12 @@ function reuseTask(id) {
   if (!task) return;
   state.prompt = task.prompt;
   state.params = { ...task.params };
-  state.references = task.references || [];
+  state.references = [];
   tryWriteStore(keys.params, state.params);
   syncControls();
   renderReferences();
   switchTab("generate");
-  status("已复用历史记录");
+  status(task.references?.length ? "已复用历史提示词，参考图请重新上传" : "已复用历史记录");
 }
 
 function deleteTask(id) {

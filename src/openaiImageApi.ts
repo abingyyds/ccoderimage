@@ -5,6 +5,7 @@ const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 export type ImageApiResult = {
   images: string[];
   revisedPrompt?: string;
+  referenceMode?: string;
 };
 
 export type ApiTestResult = {
@@ -21,6 +22,7 @@ type ImageResponseItem = {
 type ImagesApiResponse = {
   data?: ImageResponseItem[];
   error?: { message?: string; type?: string; code?: string };
+  message?: string;
 };
 
 type ResponsesApiOutput = {
@@ -32,6 +34,17 @@ type ResponsesApiOutput = {
 type ResponsesApiResponse = {
   output?: ResponsesApiOutput[];
   error?: { message?: string; type?: string; code?: string };
+  message?: string;
+};
+
+type ChatContentPart = {
+  text?: string;
+};
+
+type ChatCompletionsResponse = {
+  choices?: Array<{ message?: { content?: string | ChatContentPart[] } }>;
+  error?: { message?: string; type?: string; code?: string };
+  message?: string;
 };
 
 export async function generateOpenAIImage(
@@ -40,11 +53,11 @@ export async function generateOpenAIImage(
   params: Params,
   references: ReferenceImage[]
 ): Promise<ImageApiResult> {
+  if (references.length > 0) {
+    return generateWithReferences(settings, prompt, params, references);
+  }
   if (settings.apiMode === "responses") {
     return generateViaResponsesApi(settings, prompt, params, references);
-  }
-  if (references.length > 0) {
-    return editViaImagesApi(settings, prompt, params, references);
   }
   return generateViaImagesApi(settings, prompt, params);
 }
@@ -56,9 +69,7 @@ export async function testOpenAIConnection(settings: Settings): Promise<ApiTestR
   try {
     const response = await fetchWithTimeout(joinUrl(settings.apiUrl, "/models"), settings, {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${settings.apiKey.trim()}`
-      }
+      headers: authHeaders(settings)
     });
     const json = await parseJson<{ data?: unknown[]; error?: { message?: string } }>(response);
     assertOk(response, json);
@@ -104,8 +115,7 @@ export function buildResponsesBody(
   references: ReferenceImage[]
 ): Record<string, unknown> {
   const tool: Record<string, unknown> = {
-    type: settings.toolName.trim() || "image_generation",
-    action: references.length > 0 ? "edit" : "generate"
+    type: settings.toolName.trim() || "image_generation"
   };
   addImageOptions(tool, params);
 
@@ -127,13 +137,27 @@ async function generateViaImagesApi(settings: Settings, prompt: string, params: 
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${settings.apiKey.trim()}`
+      ...authHeaders(settings)
     },
     body: JSON.stringify(buildImagesGenerationBody(settings, prompt, params))
   });
   const json = await parseJson<ImagesApiResponse>(response);
   assertOk(response, json);
   return imagesResult(json, params.outputFormat);
+}
+
+async function generateWithReferences(
+  settings: Settings,
+  prompt: string,
+  params: Params,
+  references: ReferenceImage[]
+): Promise<ImageApiResult> {
+  try {
+    return { ...(await editViaImagesApi(settings, prompt, params, references)), referenceMode: "edits" };
+  } catch {
+    const referencedPrompt = await describeReferencesForImagePrompt(settings, prompt, params, references);
+    return { ...(await generateViaImagesApi(settings, referencedPrompt, params)), revisedPrompt: referencedPrompt, referenceMode: "vision-prompt" };
+  }
 }
 
 async function editViaImagesApi(
@@ -152,14 +176,36 @@ async function editViaImagesApi(
   }
   const response = await fetchWithTimeout(joinUrl(settings.apiUrl, "/images/edits"), settings, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${settings.apiKey.trim()}`
-    },
+    headers: authHeaders(settings),
     body: form
   });
   const json = await parseJson<ImagesApiResponse>(response);
   assertOk(response, json);
   return imagesResult(json, params.outputFormat);
+}
+
+async function describeReferencesForImagePrompt(
+  settings: Settings,
+  prompt: string,
+  params: Params,
+  references: ReferenceImage[]
+): Promise<string> {
+  const response = await fetchWithTimeout(joinUrl(settings.apiUrl, "/chat/completions"), settings, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(settings)
+    },
+    body: JSON.stringify({
+      model: responseModel(settings.mainModelId),
+      messages: buildReferencePromptMessages(prompt, params, references)
+    })
+  });
+  const json = await parseJson<ChatCompletionsResponse>(response);
+  assertOk(response, json);
+  const enhanced = chatMessageText(json.choices?.[0]?.message?.content);
+  if (!enhanced) throw new Error("参考图分析未返回内容");
+  return stripPromptEnvelope(enhanced);
 }
 
 async function generateViaResponsesApi(
@@ -172,7 +218,7 @@ async function generateViaResponsesApi(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${settings.apiKey.trim()}`
+      ...authHeaders(settings)
     },
     body: JSON.stringify(buildResponsesBody(settings, prompt, params, references))
   });
@@ -250,9 +296,9 @@ async function parseJson<T>(response: Response): Promise<T> {
   }
 }
 
-function assertOk(response: Response, json: ImagesApiResponse | ResponsesApiResponse): void {
+function assertOk(response: Response, json: ImagesApiResponse | ResponsesApiResponse | ChatCompletionsResponse): void {
   if (response.ok && !json.error) return;
-  const message = json.error?.message ?? `${response.status} ${response.statusText}`;
+  const message = json.error?.message ?? json.message ?? `${response.status} ${response.statusText}`;
   throw new Error(message);
 }
 
@@ -272,6 +318,63 @@ function responseModel(model: string): string {
   const trimmed = model.trim();
   if (!trimmed || trimmed.startsWith("gpt-image")) return "gpt-5.5";
   return trimmed;
+}
+
+function authHeaders(settings: Settings): Record<string, string> {
+  const apiKey = settings.apiKey.trim();
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    "x-api-key": apiKey
+  };
+}
+
+function buildReferencePromptMessages(prompt: string, params: Params, references: ReferenceImage[]): Array<Record<string, unknown>> {
+  return [
+    {
+      role: "system",
+      content: [
+        "你是图片生成请求的参考图分析器。",
+        "用户会提供原始提示词和一到多张参考图。",
+        "请读取参考图，将主体身份、姿态、构图、服装、材质、色彩、风格和关键视觉特征转写进最终图像生成提示词。",
+        "必须保留用户原始意图，不要编造冲突内容。",
+        "只输出最终可直接用于图片生成的提示词，不要解释，不要 Markdown。"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: [
+            `原始提示词：${prompt}`,
+            `图片参数：尺寸 ${params.size}，质量 ${params.quality}，格式 ${params.outputFormat}，数量 ${params.count}`,
+            `参考图数量：${references.length}`,
+            "请把参考图中的关键视觉信息融合到提示词中。"
+          ].join("\n")
+        },
+        ...references.map((reference) => ({
+          type: "image_url",
+          image_url: { url: reference.dataUrl }
+        }))
+      ]
+    }
+  ];
+}
+
+function chatMessageText(content: string | ChatContentPart[] | undefined): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content.map((part) => part.text || "").join("\n").trim();
+  }
+  return "";
+}
+
+function stripPromptEnvelope(value: string): string {
+  return String(value)
+    .replace(/^```(?:text|markdown)?/i, "")
+    .replace(/```$/i, "")
+    .replace(/^\s*(优化后的提示词|提示词|Prompt)\s*[:：]\s*/i, "")
+    .trim();
 }
 
 function dataUrlToBlob(dataUrl: string): Blob {
