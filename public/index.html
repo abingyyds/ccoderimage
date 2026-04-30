@@ -9,7 +9,7 @@
     <link rel="icon" href="./assets/mojing-icon-192.png" type="image/png" />
     <link rel="apple-touch-icon" href="./assets/mojing-icon-192.png" />
     <meta property="og:image" content="./assets/mojing-share-card.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260501-optimize-button" />
+    <link rel="stylesheet" href="./styles.css?v=20260501-reference-format" />
   </head>
   <body>
     <main class="app-shell">
@@ -67,8 +67,8 @@
           <div class="prompt-tools"><button class="ghost-btn" id="optimizePromptBtn" type="button">优化提示词</button></div>
           <section class="reference-box">
             <div class="section-head compact">
-              <div><h3>参考图</h3><p>支持多图上传，随生成请求提交</p></div>
-              <label class="file-btn">上传<input id="referenceInput" type="file" accept="image/*" multiple /></label>
+              <div><h3>参考图</h3><p>支持 JPG、PNG、WebP，多图上传</p></div>
+              <label class="file-btn">上传<input id="referenceInput" type="file" accept="image/jpeg,image/png,image/webp" multiple /></label>
             </div>
             <div class="reference-list" id="referenceList"></div>
           </section>
@@ -90,6 +90,6 @@
       </section>
     </main>
     <div class="modal-root" id="modalRoot" hidden></div>
-    <script src="./app.js?v=20260501-optimize-button" defer></script>
+    <script src="./app.js?v=20260501-reference-format" defer></script>
   </body>
 </html>

@@ -90,6 +90,11 @@ app.post("/api/optimize-prompt", async (request, response) => {
     response.status(400).json({ ok: false, message: "请输入提示词" });
     return;
   }
+  const unsupportedReference = references.find((reference) => reference?.dataUrl && !isSupportedReferenceDataUrl(reference.dataUrl));
+  if (unsupportedReference) {
+    response.status(400).json({ ok: false, message: `参考图格式不支持：${unsupportedReference.name || "reference"}。请使用 JPG、PNG 或 WebP` });
+    return;
+  }
   try {
     const result = await optimizePromptText(settings, prompt, params, references);
     response.json({ ok: true, ...result });
@@ -746,6 +751,12 @@ function dataUrlToBlob(dataUrl) {
   const mime = match[1] || "image/png";
   const raw = match[2] ? Buffer.from(match[3], "base64") : Buffer.from(decodeURIComponent(match[3]));
   return new Blob([raw], { type: mime });
+}
+
+function isSupportedReferenceDataUrl(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:([^;,]+)[;,]/i);
+  if (!match) return false;
+  return ["image/jpeg", "image/png", "image/webp"].includes(match[1].toLowerCase());
 }
 
 function clampNumber(value, min, max) {

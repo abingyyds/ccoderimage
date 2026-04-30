@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-optimize-button";
+const appVersion = "20260501-reference-format";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
@@ -364,19 +364,43 @@ async function optimizePrompt() {
 
 async function addReferences() {
   const files = Array.from(dom.referenceInput.files || []);
-  const refs = await Promise.all(files.map(readFile));
+  const supported = files.filter(isSupportedReferenceFile);
+  const skipped = files.length - supported.length;
+  const existing = new Set(state.references.map((reference) => reference.sourceKey).filter(Boolean));
+  const fresh = supported.filter((file) => !existing.has(referenceFileKey(file)));
+  const refs = await Promise.all(fresh.map(readFile));
   state.references.push(...refs);
   dom.referenceInput.value = "";
   renderReferences();
+  if (skipped) {
+    status("参考图仅支持 JPG、PNG、WebP；HEIC 请先转为 JPG 或 PNG");
+  } else if (supported.length && !fresh.length) {
+    status("参考图已在列表中");
+  }
 }
 
 function readFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve({ id: `ref-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, name: file.name, dataUrl: String(reader.result || "") });
+    reader.onload = () => resolve({
+      id: `ref-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name,
+      dataUrl: String(reader.result || ""),
+      sourceKey: referenceFileKey(file)
+    });
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+function isSupportedReferenceFile(file) {
+  const type = String(file.type || "").toLowerCase();
+  const name = String(file.name || "").toLowerCase();
+  return ["image/jpeg", "image/png", "image/webp"].includes(type) || /\.(jpe?g|png|webp)$/.test(name);
+}
+
+function referenceFileKey(file) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
 function renderReferences() {
