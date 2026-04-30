@@ -112,6 +112,7 @@ app.post("/api/generate", async (request, response) => {
     response.json({ ok: true, ...result, images, historySaved });
   } catch (error) {
     const message = errorMessage(error);
+    const promptOptimization = normalizePromptOptimization(error?.promptOptimization);
     await saveHistoryTaskSafely({
       id: taskId,
       prompt,
@@ -121,10 +122,11 @@ app.post("/api/generate", async (request, response) => {
       images: [],
       error: message,
       revisedPrompt: "",
+      promptOptimization,
       createdAt: createdAt.getTime(),
       finishedAt: Date.now()
     });
-    response.status(502).json({ ok: false, message });
+    response.status(502).json({ ok: false, message, promptOptimization, stage: error?.stage || "" });
   }
 });
 
@@ -248,37 +250,81 @@ function sanitizeParams(value) {
 
 async function generateOpenAIImage(settings, prompt, params, references) {
   let finalPrompt = prompt;
+  let promptOptimization = null;
   let promptResult = {};
   if (params.optimizePrompt) {
     const optimization = await optimizeImagePrompt(settings, prompt, params, references);
     finalPrompt = optimization.prompt;
+    promptOptimization = optimization.ok
+      ? { status: optimization.source === "local" ? "local" : "optimized", message: optimization.message || "" }
+      : { status: "skipped", message: optimization.message };
     promptResult = optimization.ok
-      ? { revisedPrompt: finalPrompt, optimizedPrompt: finalPrompt, promptOptimization: { status: "optimized" } }
-      : { promptOptimization: { status: "skipped", message: optimization.message } };
+      ? { revisedPrompt: finalPrompt, optimizedPrompt: finalPrompt, promptOptimization }
+      : { promptOptimization };
   }
-  if (settings.apiMode === "responses") {
-    return { ...(await generateViaResponsesApi(settings, finalPrompt, params, references)), ...promptResult };
+  try {
+    return { ...(await runImageGeneration(settings, finalPrompt, params, references)), ...promptResult };
+  } catch (error) {
+    if (params.optimizePrompt && finalPrompt !== prompt && isTransientUpstream(error)) {
+      try {
+        const fallbackOptimization = {
+          status: "fallback",
+          message: "优化后的提示词生成失败，已使用原提示词重试"
+        };
+        return {
+          ...(await runImageGeneration(settings, prompt, params, references)),
+          optimizedPrompt: finalPrompt,
+          promptOptimization: fallbackOptimization
+        };
+      } catch (retryError) {
+        retryError.promptOptimization = promptOptimization;
+        retryError.stage = "image";
+        throw retryError;
+      }
+    }
+    error.promptOptimization = promptOptimization;
+    error.stage = "image";
+    throw error;
   }
-  if (references.length > 0) {
-    return { ...(await editViaImagesApi(settings, finalPrompt, params, references)), ...promptResult };
-  }
-  return { ...(await generateViaImagesApi(settings, finalPrompt, params)), ...promptResult };
+}
+
+async function runImageGeneration(settings, prompt, params, references) {
+  if (settings.apiMode === "responses") return generateViaResponsesApi(settings, prompt, params, references);
+  if (references.length > 0) return editViaImagesApi(settings, prompt, params, references);
+  return generateViaImagesApi(settings, prompt, params);
 }
 
 async function optimizeImagePrompt(settings, prompt, params, references) {
   const content = buildPromptOptimizationMessages(prompt, params, references);
   const errors = [];
-  try {
-    return { ok: true, prompt: await optimizePromptViaResponses(settings, content) };
-  } catch (error) {
-    errors.push(errorMessage(error));
+  for (const optimizer of [optimizePromptViaChatCompletions, optimizePromptViaResponses]) {
+    try {
+      return { ok: true, prompt: await callPromptOptimizerWithRetry(optimizer, settings, content), source: "gpt-5.5" };
+    } catch (error) {
+      errors.push(errorMessage(error));
+      if (!isEndpointUnsupported(error) && !isTransientUpstream(error)) break;
+    }
   }
-  try {
-    return { ok: true, prompt: await optimizePromptViaChatCompletions(settings, content) };
-  } catch (error) {
-    errors.push(errorMessage(error));
+  return {
+    ok: true,
+    prompt: localOptimizeImagePrompt(prompt, params, references),
+    source: "local",
+    message: errors.find(Boolean) || "提示词优化服务暂不可用"
+  };
+}
+
+async function callPromptOptimizerWithRetry(optimizer, settings, messages) {
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await optimizer(settings, messages);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientUpstream(error)) throw error;
+      if (attempt === 0) await delay(350);
+    }
   }
-  return { ok: false, prompt, message: errors.find(Boolean) || "提示词优化服务暂不可用" };
+  throw lastError;
 }
 
 async function optimizePromptViaChatCompletions(settings, messages) {
@@ -295,7 +341,7 @@ async function optimizePromptViaChatCompletions(settings, messages) {
   });
   const json = await parseJson(upstream);
   assertOk(upstream, json);
-  const optimized = String(json.choices?.[0]?.message?.content || "").trim();
+  const optimized = extractChatMessageText(json.choices?.[0]?.message?.content);
   if (!optimized) throw new Error("提示词优化未返回内容");
   return stripPromptEnvelope(optimized);
 }
@@ -309,7 +355,7 @@ async function optimizePromptViaResponses(settings, messages) {
     },
     body: JSON.stringify({
       model: responseModel(settings.mainModelId),
-      input: messages.map((message) => ({ role: message.role, content: [{ type: "input_text", text: message.content }] }))
+      input: promptOptimizationInput(messages)
     })
   });
   const json = await parseJson(upstream);
@@ -317,6 +363,18 @@ async function optimizePromptViaResponses(settings, messages) {
   const optimized = extractResponsesText(json);
   if (!optimized) throw new Error("提示词优化未返回内容");
   return stripPromptEnvelope(optimized);
+}
+
+function promptOptimizationInput(messages) {
+  return messages.map((message) => `${message.role === "system" ? "系统要求" : "用户需求"}：\n${message.content}`).join("\n\n");
+}
+
+function extractChatMessageText(content) {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content.map((part) => typeof part === "string" ? part : part?.text || "").join("\n").trim();
+  }
+  return "";
 }
 
 function buildPromptOptimizationMessages(prompt, params, references) {
@@ -362,6 +420,27 @@ function stripPromptEnvelope(value) {
     .replace(/```$/i, "")
     .replace(/^\s*(优化后的提示词|提示词|Prompt)\s*[:：]\s*/i, "")
     .trim();
+}
+
+function localOptimizeImagePrompt(prompt, params, references) {
+  const referenceLine = references.length
+    ? `参考图要求：结合 ${references.length} 张参考图，保留参考图中的关键主体、结构、姿态、颜色和可识别特征。`
+    : "";
+  return [
+    prompt,
+    "画面优化要求：主体清晰，构图完整，层次丰富，细节准确，光线自然，色彩协调，材质真实，边缘干净。",
+    "生成约束：严格保留原始提示词中的人物、产品、品牌、文字、数量、动作、场景和风格要求，不添加冲突元素，不生成水印、乱码文字或多余边框。",
+    `输出倾向：适配 ${params.size} 尺寸，${params.quality} 质量，适合高质量图片生成。`,
+    referenceLine
+  ].filter(Boolean).join("\n");
+}
+
+function isTransientUpstream(error) {
+  return /upstream|temporarily unavailable|timeout|timed out|econnreset|etimedout|502|503|504|暂不可用|超时/i.test(errorMessage(error));
+}
+
+function isEndpointUnsupported(error) {
+  return /404|405|not found|unsupported|cannot\s+(get|post)|不支持|接口不存在/i.test(errorMessage(error));
 }
 
 
@@ -726,7 +805,7 @@ function trimHistoryStore(history) {
 
 function normalizePromptOptimization(value) {
   if (!value || typeof value !== "object") return null;
-  const status = value.status === "optimized" ? "optimized" : value.status === "skipped" ? "skipped" : "";
+  const status = ["optimized", "skipped", "fallback", "local"].includes(value.status) ? value.status : "";
   if (!status) return null;
   return {
     status,
@@ -787,6 +866,12 @@ function dataUrlToBlob(dataUrl) {
 function clampNumber(value, min, max) {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function errorMessage(error) {

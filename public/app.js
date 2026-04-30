@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-prompt-optimize-fallback";
+const appVersion = "20260501-prompt-optimize-retry";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
@@ -389,12 +389,15 @@ async function generateImage() {
       body: JSON.stringify({ taskId: task.id, createdAt: task.createdAt, prompt, settings: state.settings, params: state.params, references: state.references })
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.message || data.error || `${response.status} ${response.statusText}`);
+    if (!response.ok) {
+      task.promptOptimization = data.promptOptimization || null;
+      throw new Error(data.message || data.error || `${response.status} ${response.statusText}`);
+    }
     task.images = normalizeImages(data);
     task.revisedPrompt = data.optimizedPrompt || data.revisedPrompt || data.revised_prompt || "";
     task.promptOptimization = data.promptOptimization || null;
     task.status = "succeeded";
-    const optimizeStatus = data.promptOptimization?.status === "skipped" ? "，提示词优化跳过" : "";
+    const optimizeStatus = promptOptimizationStatusText(data.promptOptimization);
     status(task.images.length ? `生成完成：${task.images.length} 张，耗时 ${formatElapsed(task)}${optimizeStatus}${data.historySaved === false ? "，历史未入库" : ""}` : `生成完成，但未返回图片，耗时 ${formatElapsed(task)}${optimizeStatus}`);
   } catch (error) {
     task.status = "failed";
@@ -559,9 +562,7 @@ function historyCard(task) {
     ? `<button class="image-preview-btn" data-preview-task="${attr(task.id)}" data-preview-index="0" type="button" aria-label="预览图片"><img src="${attr(task.images[0])}" alt="${attr(task.prompt)}" /><span>点击放大</span></button>`
     : `<div class="history-placeholder">${task.status === "running" ? "生成中" : "无图片"}</div>`;
   const settingsPart = task.settingsSummary ? `${esc(task.settingsSummary)} · ` : "";
-  const optimizePart = task.params.optimizePrompt
-    ? task.promptOptimization?.status === "skipped" ? " · 提示词优化跳过" : task.revisedPrompt ? " · 提示词已优化" : " · 提示词优化"
-    : "";
+  const optimizePart = task.params.optimizePrompt ? ` · ${promptOptimizationLabel(task)}` : "";
   const saveButton = task.images?.[0] ? `<button type="button" data-download-task="${attr(task.id)}" data-download-index="0">保存</button>` : "";
   const activeActions = `${saveButton}<button type="button" data-reuse-task="${attr(task.id)}">复用</button><button type="button" data-delete-task="${attr(task.id)}">删除</button>`;
   const deletedActions = `<button type="button" data-restore-task="${attr(task.id)}">恢复</button><button type="button" data-purge-task="${attr(task.id)}">清除</button>`;
@@ -575,6 +576,22 @@ function historyCard(task) {
         <div class="row-actions">${deletedMode ? deletedActions : activeActions}</div>
       </div>
     </article>`;
+}
+
+function promptOptimizationLabel(task) {
+  if (task.promptOptimization?.status === "skipped") return "提示词优化跳过";
+  if (task.promptOptimization?.status === "fallback") return "优化后失败，已用原提示词";
+  if (task.promptOptimization?.status === "local") return "提示词已本地优化";
+  if (task.promptOptimization?.status === "optimized" || task.revisedPrompt) return "提示词已优化";
+  return "提示词优化";
+}
+
+function promptOptimizationStatusText(value) {
+  if (value?.status === "skipped") return "，提示词优化跳过";
+  if (value?.status === "fallback") return "，优化后失败，已用原提示词";
+  if (value?.status === "local") return "，提示词已本地优化";
+  if (value?.status === "optimized") return "，提示词已优化";
+  return "";
 }
 
 function openImagePreview(taskId, imageIndex = 0) {
