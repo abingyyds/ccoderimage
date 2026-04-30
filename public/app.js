@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-reference-format";
+const appVersion = "20260501-optimize-diagnostics";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
@@ -38,7 +38,7 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const id of [
     "statusLine", "templatesPanel", "generatePanel", "templateSearch", "categoryFilter", "featuredOnly",
     "templateGrid", "templateCount", "templateHint", "loadMoreBtn", "promptInput", "qualitySelect",
-    "formatSelect", "countInput", "sizeInput", "optimizePromptBtn", "referenceInput", "referenceList", "generateBtn",
+    "formatSelect", "countInput", "sizeInput", "optimizePromptBtn", "optimizePromptHint", "referenceInput", "referenceList", "generateBtn",
     "generationTimer", "historyList", "historyCount", "clearHistoryBtn", "deletedHistoryBtn", "openSettingsBtn", "testConnectionBtn",
     "openSizeBtn", "modalRoot"
   ]) dom[id] = document.getElementById(id);
@@ -340,6 +340,8 @@ async function optimizePrompt() {
     return;
   }
   dom.optimizePromptBtn.disabled = true;
+  dom.optimizePromptBtn.textContent = "优化中";
+  setOptimizePromptHint("正在请求 GPT-5.5");
   status("提示词优化中");
   try {
     const response = await fetch("/api/optimize-prompt", {
@@ -354,12 +356,22 @@ async function optimizePrompt() {
     state.prompt = optimized;
     dom.promptInput.value = optimized;
     dom.promptInput.focus();
+    setOptimizePromptHint(`已优化${data.mode ? ` · ${data.mode}` : ""}`);
     status("提示词已优化，可继续修改后生成");
   } catch (error) {
-    status(`提示词优化失败：${errorMessage(error)}`);
+    const message = errorMessage(error);
+    setOptimizePromptHint(message, true);
+    status(`提示词优化失败：${message}`);
   } finally {
     dom.optimizePromptBtn.disabled = false;
+    dom.optimizePromptBtn.textContent = "优化提示词";
   }
+}
+
+function setOptimizePromptHint(message, failed = false) {
+  if (!dom.optimizePromptHint) return;
+  dom.optimizePromptHint.textContent = message || "";
+  dom.optimizePromptHint.classList.toggle("error", Boolean(failed));
 }
 
 async function addReferences() {

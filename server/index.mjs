@@ -99,7 +99,9 @@ app.post("/api/optimize-prompt", async (request, response) => {
     const result = await optimizePromptText(settings, prompt, params, references);
     response.json({ ok: true, ...result });
   } catch (error) {
-    response.status(502).json({ ok: false, message: errorMessage(error) });
+    const message = errorMessage(error);
+    process.stderr.write(`prompt optimize failed: ${message}\n`);
+    response.status(502).json({ ok: false, message });
   }
 });
 
@@ -280,7 +282,8 @@ async function optimizePromptWithChat(settings, messages) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${settings.apiKey.trim()}`
+      Authorization: `Bearer ${settings.apiKey.trim()}`,
+      "x-api-key": settings.apiKey.trim()
     },
     body: JSON.stringify({
       model: responseModel(settings.mainModelId),
@@ -471,7 +474,8 @@ async function parseJson(response) {
 
 function assertOk(response, json) {
   if (response.ok && !json.error) return;
-  throw new Error(json.error?.message ?? `${response.status} ${response.statusText}`);
+  const message = json.error?.message || json.message || json.error || json.code || `${response.status} ${response.statusText}`;
+  throw new Error(typeof message === "string" ? message : JSON.stringify(message));
 }
 
 function imagesResult(json, format) {
