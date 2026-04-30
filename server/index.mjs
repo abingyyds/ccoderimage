@@ -104,6 +104,7 @@ app.post("/api/generate", async (request, response) => {
       images,
       error: "",
       revisedPrompt: result.revisedPrompt || "",
+      promptOptimization: result.promptOptimization || null,
       createdAt: createdAt.getTime(),
       finishedAt: Date.now()
     };
@@ -246,8 +247,15 @@ function sanitizeParams(value) {
 }
 
 async function generateOpenAIImage(settings, prompt, params, references) {
-  const finalPrompt = params.optimizePrompt ? await optimizeImagePrompt(settings, prompt, params, references) : prompt;
-  const promptResult = finalPrompt === prompt ? {} : { revisedPrompt: finalPrompt, optimizedPrompt: finalPrompt };
+  let finalPrompt = prompt;
+  let promptResult = {};
+  if (params.optimizePrompt) {
+    const optimization = await optimizeImagePrompt(settings, prompt, params, references);
+    finalPrompt = optimization.prompt;
+    promptResult = optimization.ok
+      ? { revisedPrompt: finalPrompt, optimizedPrompt: finalPrompt, promptOptimization: { status: "optimized" } }
+      : { promptOptimization: { status: "skipped", message: optimization.message } };
+  }
   if (settings.apiMode === "responses") {
     return { ...(await generateViaResponsesApi(settings, finalPrompt, params, references)), ...promptResult };
   }
@@ -259,12 +267,18 @@ async function generateOpenAIImage(settings, prompt, params, references) {
 
 async function optimizeImagePrompt(settings, prompt, params, references) {
   const content = buildPromptOptimizationMessages(prompt, params, references);
+  const errors = [];
   try {
-    return await optimizePromptViaChatCompletions(settings, content);
+    return { ok: true, prompt: await optimizePromptViaResponses(settings, content) };
   } catch (error) {
-    if (!isEndpointUnsupported(error)) throw error;
-    return optimizePromptViaResponses(settings, content);
+    errors.push(errorMessage(error));
   }
+  try {
+    return { ok: true, prompt: await optimizePromptViaChatCompletions(settings, content) };
+  } catch (error) {
+    errors.push(errorMessage(error));
+  }
+  return { ok: false, prompt, message: errors.find(Boolean) || "提示词优化服务暂不可用" };
 }
 
 async function optimizePromptViaChatCompletions(settings, messages) {
@@ -350,9 +364,6 @@ function stripPromptEnvelope(value) {
     .trim();
 }
 
-function isEndpointUnsupported(error) {
-  return /404|405|not found|unsupported|cannot\s+(get|post)|不支持|接口不存在/i.test(errorMessage(error));
-}
 
 async function generateViaImagesApi(settings, prompt, params) {
   const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/images/generations"), settings, {
@@ -536,6 +547,7 @@ function normalizeClientHistoryTask(task) {
     images: Array.isArray(task.images) ? task.images : Array.isArray(task.outputImages) ? task.outputImages : [],
     error: String(task.error || ""),
     revisedPrompt: String(task.revisedPrompt || task.revised_prompt || ""),
+    promptOptimization: normalizePromptOptimization(task.promptOptimization),
     createdAt: safeDate(task.createdAt, new Date()).getTime(),
     finishedAt: task.finishedAt ? safeDate(task.finishedAt, new Date()).getTime() : null
   };
@@ -700,6 +712,7 @@ function normalizeHistoryRecord(task) {
     images: Array.isArray(task?.images) ? task.images.map(String) : [],
     error: String(task?.error || ""),
     revisedPrompt: String(task?.revisedPrompt || task?.revised_prompt || ""),
+    promptOptimization: normalizePromptOptimization(task?.promptOptimization),
     createdAt: safeDate(task?.createdAt, new Date()).getTime(),
     finishedAt: task?.finishedAt ? safeDate(task.finishedAt, new Date()).getTime() : null,
     deletedAt: task?.deletedAt ? safeDate(task.deletedAt, new Date()).getTime() : null
@@ -709,6 +722,16 @@ function normalizeHistoryRecord(task) {
 function trimHistoryStore(history) {
   history.sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0));
   if (history.length > 300) history.splice(300);
+}
+
+function normalizePromptOptimization(value) {
+  if (!value || typeof value !== "object") return null;
+  const status = value.status === "optimized" ? "optimized" : value.status === "skipped" ? "skipped" : "";
+  if (!status) return null;
+  return {
+    status,
+    message: String(value.message || "").slice(0, 240)
+  };
 }
 
 function historyReferences(references) {

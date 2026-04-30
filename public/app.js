@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-prompt-optimize";
+const appVersion = "20260501-prompt-optimize-fallback";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
@@ -392,8 +392,10 @@ async function generateImage() {
     if (!response.ok) throw new Error(data.message || data.error || `${response.status} ${response.statusText}`);
     task.images = normalizeImages(data);
     task.revisedPrompt = data.optimizedPrompt || data.revisedPrompt || data.revised_prompt || "";
+    task.promptOptimization = data.promptOptimization || null;
     task.status = "succeeded";
-    status(task.images.length ? `生成完成：${task.images.length} 张，耗时 ${formatElapsed(task)}${data.historySaved === false ? "，历史未入库" : ""}` : `生成完成，但未返回图片，耗时 ${formatElapsed(task)}`);
+    const optimizeStatus = data.promptOptimization?.status === "skipped" ? "，提示词优化跳过" : "";
+    status(task.images.length ? `生成完成：${task.images.length} 张，耗时 ${formatElapsed(task)}${optimizeStatus}${data.historySaved === false ? "，历史未入库" : ""}` : `生成完成，但未返回图片，耗时 ${formatElapsed(task)}${optimizeStatus}`);
   } catch (error) {
     task.status = "failed";
     task.error = errorMessage(error);
@@ -537,6 +539,7 @@ function normalizeHistoryTask(task) {
     images: Array.isArray(task.images) ? task.images : [],
     error: String(task.error || ""),
     revisedPrompt: String(task.revisedPrompt || ""),
+    promptOptimization: task.promptOptimization && typeof task.promptOptimization === "object" ? task.promptOptimization : null,
     createdAt: Number(task.createdAt) || Date.now(),
     finishedAt: task.finishedAt ? Number(task.finishedAt) : null,
     deletedAt: task.deletedAt ? Number(task.deletedAt) : null
@@ -556,7 +559,9 @@ function historyCard(task) {
     ? `<button class="image-preview-btn" data-preview-task="${attr(task.id)}" data-preview-index="0" type="button" aria-label="预览图片"><img src="${attr(task.images[0])}" alt="${attr(task.prompt)}" /><span>点击放大</span></button>`
     : `<div class="history-placeholder">${task.status === "running" ? "生成中" : "无图片"}</div>`;
   const settingsPart = task.settingsSummary ? `${esc(task.settingsSummary)} · ` : "";
-  const optimizePart = task.params.optimizePrompt ? " · 提示词已优化" : "";
+  const optimizePart = task.params.optimizePrompt
+    ? task.promptOptimization?.status === "skipped" ? " · 提示词优化跳过" : task.revisedPrompt ? " · 提示词已优化" : " · 提示词优化"
+    : "";
   const saveButton = task.images?.[0] ? `<button type="button" data-download-task="${attr(task.id)}" data-download-index="0">保存</button>` : "";
   const activeActions = `${saveButton}<button type="button" data-reuse-task="${attr(task.id)}">复用</button><button type="button" data-delete-task="${attr(task.id)}">删除</button>`;
   const deletedActions = `<button type="button" data-restore-task="${attr(task.id)}">恢复</button><button type="button" data-purge-task="${attr(task.id)}">清除</button>`;
