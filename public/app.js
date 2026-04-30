@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-prompt-optimize-local-hotfix";
+const appVersion = "20260501-reference-fallback";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
@@ -396,9 +396,12 @@ async function generateImage() {
     task.images = normalizeImages(data);
     task.revisedPrompt = data.optimizedPrompt || data.revisedPrompt || data.revised_prompt || "";
     task.promptOptimization = data.promptOptimization || null;
+    task.referenceMode = data.referenceMode || "";
+    task.referenceWarning = data.referenceWarning || "";
     task.status = "succeeded";
     const optimizeStatus = promptOptimizationStatusText(data.promptOptimization);
-    status(task.images.length ? `生成完成：${task.images.length} 张，耗时 ${formatElapsed(task)}${optimizeStatus}${data.historySaved === false ? "，历史未入库" : ""}` : `生成完成，但未返回图片，耗时 ${formatElapsed(task)}${optimizeStatus}`);
+    const referenceStatus = data.referenceMode === "text-fallback" ? "，参考图上游不可用，已改用文字生成" : "";
+    status(task.images.length ? `生成完成：${task.images.length} 张，耗时 ${formatElapsed(task)}${optimizeStatus}${referenceStatus}${data.historySaved === false ? "，历史未入库" : ""}` : `生成完成，但未返回图片，耗时 ${formatElapsed(task)}${optimizeStatus}${referenceStatus}`);
   } catch (error) {
     task.status = "failed";
     task.error = errorMessage(error);
@@ -543,6 +546,8 @@ function normalizeHistoryTask(task) {
     error: String(task.error || ""),
     revisedPrompt: String(task.revisedPrompt || ""),
     promptOptimization: task.promptOptimization && typeof task.promptOptimization === "object" ? task.promptOptimization : null,
+    referenceMode: String(task.referenceMode || ""),
+    referenceWarning: String(task.referenceWarning || ""),
     createdAt: Number(task.createdAt) || Date.now(),
     finishedAt: task.finishedAt ? Number(task.finishedAt) : null,
     deletedAt: task.deletedAt ? Number(task.deletedAt) : null
@@ -563,6 +568,7 @@ function historyCard(task) {
     : `<div class="history-placeholder">${task.status === "running" ? "生成中" : "无图片"}</div>`;
   const settingsPart = task.settingsSummary ? `${esc(task.settingsSummary)} · ` : "";
   const optimizePart = task.params.optimizePrompt ? ` · ${promptOptimizationLabel(task)}` : "";
+  const referencePart = task.referenceMode === "text-fallback" ? " · 参考图已转文字兜底" : "";
   const saveButton = task.images?.[0] ? `<button type="button" data-download-task="${attr(task.id)}" data-download-index="0">保存</button>` : "";
   const activeActions = `${saveButton}<button type="button" data-reuse-task="${attr(task.id)}">复用</button><button type="button" data-delete-task="${attr(task.id)}">删除</button>`;
   const deletedActions = `<button type="button" data-restore-task="${attr(task.id)}">恢复</button><button type="button" data-purge-task="${attr(task.id)}">清除</button>`;
@@ -572,7 +578,7 @@ function historyCard(task) {
       <div class="history-body">
         <div class="meta-row"><span>${task.status === "succeeded" ? "成功" : task.status === "failed" ? "失败" : "生成中"}</span><span data-elapsed-task="${attr(task.id)}">耗时 ${formatElapsed(task)}</span><span>${time(task.createdAt)}</span></div>
         <p>${esc(task.error || task.prompt)}</p>
-        <small>${settingsPart}${esc(task.params.size)} · ${esc(task.params.quality)} · ${esc(task.params.outputFormat)} · ${task.params.count} 张${optimizePart}</small>
+        <small>${settingsPart}${esc(task.params.size)} · ${esc(task.params.quality)} · ${esc(task.params.outputFormat)} · ${task.params.count} 张${optimizePart}${referencePart}</small>
         <div class="row-actions">${deletedMode ? deletedActions : activeActions}</div>
       </div>
     </article>`;

@@ -104,8 +104,7 @@ export function buildResponsesBody(
   references: ReferenceImage[]
 ): Record<string, unknown> {
   const tool: Record<string, unknown> = {
-    type: settings.toolName.trim() || "image_generation",
-    action: references.length > 0 ? "edit" : "generate"
+    type: settings.toolName.trim() || "image_generation"
   };
   addImageOptions(tool, params);
 

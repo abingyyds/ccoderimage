@@ -105,6 +105,8 @@ app.post("/api/generate", async (request, response) => {
       error: "",
       revisedPrompt: result.revisedPrompt || "",
       promptOptimization: result.promptOptimization || null,
+      referenceMode: result.referenceMode || "",
+      referenceWarning: result.referenceWarning || "",
       createdAt: createdAt.getTime(),
       finishedAt: Date.now()
     };
@@ -289,9 +291,36 @@ async function generateOpenAIImage(settings, prompt, params, references) {
 }
 
 async function runImageGeneration(settings, prompt, params, references) {
+  if (references.length > 0) return generateWithReferences(settings, prompt, params, references);
   if (settings.apiMode === "responses") return generateViaResponsesApi(settings, prompt, params, references);
-  if (references.length > 0) return editViaImagesApi(settings, prompt, params, references);
   return generateViaImagesApi(settings, prompt, params);
+}
+
+async function generateWithReferences(settings, prompt, params, references) {
+  const errors = [];
+  try {
+    return {
+      ...(await generateViaResponsesApi(settings, prompt, params, references)),
+      referenceMode: "responses"
+    };
+  } catch (error) {
+    errors.push(`responses: ${errorMessage(error)}`);
+    if (!isEndpointUnsupported(error) && !isTransientUpstream(error)) throw error;
+  }
+  try {
+    return {
+      ...(await editViaImagesApi(settings, prompt, params, references)),
+      referenceMode: "edits"
+    };
+  } catch (error) {
+    errors.push(`edits: ${errorMessage(error)}`);
+    if (!isTransientUpstream(error) && !isEndpointUnsupported(error)) throw error;
+  }
+  return {
+    ...(await generateViaImagesApi(settings, referenceFallbackPrompt(prompt, references), params)),
+    referenceMode: "text-fallback",
+    referenceWarning: `参考图上游暂不可用，已改用文字提示生成。${errors.join("；").slice(0, 360)}`
+  };
 }
 
 async function optimizeImagePrompt(settings, prompt, params, references) {
@@ -316,8 +345,20 @@ function localOptimizeImagePrompt(prompt, params, references) {
   ].filter(Boolean).join("\n");
 }
 
+function referenceFallbackPrompt(prompt, references) {
+  const names = references.map((reference) => reference?.name).filter(Boolean).slice(0, 6).join("、");
+  return [
+    prompt,
+    `用户上传了 ${references.length} 张参考图${names ? `（${names}）` : ""}。当前参考图上游暂不可用，请尽量根据用户提示生成相近效果，保持主体、风格、构图和细节要求一致。`
+  ].join("\n");
+}
+
 function isTransientUpstream(error) {
   return /upstream|temporarily unavailable|timeout|timed out|econnreset|etimedout|502|503|504|暂不可用|超时/i.test(errorMessage(error));
+}
+
+function isEndpointUnsupported(error) {
+  return /404|405|not found|unsupported|cannot\s+(get|post)|不支持|接口不存在/i.test(errorMessage(error));
 }
 
 async function generateViaImagesApi(settings, prompt, params) {
@@ -383,8 +424,7 @@ function buildImagesGenerationBody(settings, prompt, params) {
 
 function buildResponsesBody(settings, prompt, params, references) {
   const tool = {
-    type: settings.toolName.trim() || "image_generation",
-    action: references.length > 0 ? "edit" : "generate"
+    type: settings.toolName.trim() || "image_generation"
   };
   addImageOptions(tool, params);
   return {
@@ -503,6 +543,8 @@ function normalizeClientHistoryTask(task) {
     error: String(task.error || ""),
     revisedPrompt: String(task.revisedPrompt || task.revised_prompt || ""),
     promptOptimization: normalizePromptOptimization(task.promptOptimization),
+    referenceMode: normalizeReferenceMode(task.referenceMode),
+    referenceWarning: String(task.referenceWarning || "").slice(0, 420),
     createdAt: safeDate(task.createdAt, new Date()).getTime(),
     finishedAt: task.finishedAt ? safeDate(task.finishedAt, new Date()).getTime() : null
   };
@@ -668,6 +710,8 @@ function normalizeHistoryRecord(task) {
     error: String(task?.error || ""),
     revisedPrompt: String(task?.revisedPrompt || task?.revised_prompt || ""),
     promptOptimization: normalizePromptOptimization(task?.promptOptimization),
+    referenceMode: normalizeReferenceMode(task?.referenceMode),
+    referenceWarning: String(task?.referenceWarning || "").slice(0, 420),
     createdAt: safeDate(task?.createdAt, new Date()).getTime(),
     finishedAt: task?.finishedAt ? safeDate(task.finishedAt, new Date()).getTime() : null,
     deletedAt: task?.deletedAt ? safeDate(task.deletedAt, new Date()).getTime() : null
@@ -687,6 +731,10 @@ function normalizePromptOptimization(value) {
     status,
     message: String(value.message || "").slice(0, 240)
   };
+}
+
+function normalizeReferenceMode(value) {
+  return ["responses", "edits", "text-fallback"].includes(value) ? value : "";
 }
 
 function historyReferences(references) {
