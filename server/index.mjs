@@ -295,131 +295,12 @@ async function runImageGeneration(settings, prompt, params, references) {
 }
 
 async function optimizeImagePrompt(settings, prompt, params, references) {
-  const content = buildPromptOptimizationMessages(prompt, params, references);
-  const errors = [];
-  for (const optimizer of [optimizePromptViaChatCompletions, optimizePromptViaResponses]) {
-    try {
-      return { ok: true, prompt: await callPromptOptimizerWithRetry(optimizer, settings, content), source: "gpt-5.5" };
-    } catch (error) {
-      errors.push(errorMessage(error));
-      if (!isEndpointUnsupported(error) && !isTransientUpstream(error)) break;
-    }
-  }
   return {
     ok: true,
     prompt: localOptimizeImagePrompt(prompt, params, references),
     source: "local",
-    message: errors.find(Boolean) || "提示词优化服务暂不可用"
+    message: "远程 GPT 提示词优化已临时关闭，避免上游不可用影响图片生成"
   };
-}
-
-async function callPromptOptimizerWithRetry(optimizer, settings, messages) {
-  let lastError;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      return await optimizer(settings, messages);
-    } catch (error) {
-      lastError = error;
-      if (!isTransientUpstream(error)) throw error;
-      if (attempt === 0) await delay(350);
-    }
-  }
-  throw lastError;
-}
-
-async function optimizePromptViaChatCompletions(settings, messages) {
-  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/chat/completions"), settings, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${settings.apiKey.trim()}`
-    },
-    body: JSON.stringify({
-      model: responseModel(settings.mainModelId),
-      messages
-    })
-  });
-  const json = await parseJson(upstream);
-  assertOk(upstream, json);
-  const optimized = extractChatMessageText(json.choices?.[0]?.message?.content);
-  if (!optimized) throw new Error("提示词优化未返回内容");
-  return stripPromptEnvelope(optimized);
-}
-
-async function optimizePromptViaResponses(settings, messages) {
-  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/responses"), settings, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${settings.apiKey.trim()}`
-    },
-    body: JSON.stringify({
-      model: responseModel(settings.mainModelId),
-      input: promptOptimizationInput(messages)
-    })
-  });
-  const json = await parseJson(upstream);
-  assertOk(upstream, json);
-  const optimized = extractResponsesText(json);
-  if (!optimized) throw new Error("提示词优化未返回内容");
-  return stripPromptEnvelope(optimized);
-}
-
-function promptOptimizationInput(messages) {
-  return messages.map((message) => `${message.role === "system" ? "系统要求" : "用户需求"}：\n${message.content}`).join("\n\n");
-}
-
-function extractChatMessageText(content) {
-  if (typeof content === "string") return content.trim();
-  if (Array.isArray(content)) {
-    return content.map((part) => typeof part === "string" ? part : part?.text || "").join("\n").trim();
-  }
-  return "";
-}
-
-function buildPromptOptimizationMessages(prompt, params, references) {
-  const referenceNote = references.length
-    ? `用户上传了 ${references.length} 张参考图，优化后的提示词应保留对参考图的编辑或融合意图。`
-    : "用户没有上传参考图。";
-  return [
-    {
-      role: "system",
-      content: [
-        "你是图片生成提示词优化器。",
-        "把用户的原始提示词改写成更适合图像生成模型的高质量提示词。",
-        "保留用户意图、主体、文字内容、语言和限制，不要加入与用户要求冲突的新元素。",
-        "补充有帮助的画面细节、构图、光线、材质、镜头、风格和质量约束。",
-        "只输出优化后的提示词本身，不要解释，不要使用 Markdown。"
-      ].join("\n")
-    },
-    {
-      role: "user",
-      content: [
-        `原始提示词：${prompt}`,
-        `图片参数：尺寸 ${params.size}，质量 ${params.quality}，格式 ${params.outputFormat}，数量 ${params.count}`,
-        referenceNote
-      ].join("\n")
-    }
-  ];
-}
-
-function extractResponsesText(json) {
-  if (typeof json.output_text === "string") return json.output_text.trim();
-  const parts = [];
-  for (const item of Array.isArray(json.output) ? json.output : []) {
-    for (const content of Array.isArray(item.content) ? item.content : []) {
-      if (typeof content.text === "string") parts.push(content.text);
-    }
-  }
-  return parts.join("\n").trim();
-}
-
-function stripPromptEnvelope(value) {
-  return String(value)
-    .replace(/^```(?:text|markdown)?/i, "")
-    .replace(/```$/i, "")
-    .replace(/^\s*(优化后的提示词|提示词|Prompt)\s*[:：]\s*/i, "")
-    .trim();
 }
 
 function localOptimizeImagePrompt(prompt, params, references) {
@@ -438,11 +319,6 @@ function localOptimizeImagePrompt(prompt, params, references) {
 function isTransientUpstream(error) {
   return /upstream|temporarily unavailable|timeout|timed out|econnreset|etimedout|502|503|504|暂不可用|超时/i.test(errorMessage(error));
 }
-
-function isEndpointUnsupported(error) {
-  return /404|405|not found|unsupported|cannot\s+(get|post)|不支持|接口不存在/i.test(errorMessage(error));
-}
-
 
 async function generateViaImagesApi(settings, prompt, params) {
   const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/images/generations"), settings, {
