@@ -23,9 +23,10 @@ test("normalizes prompts and blocks missing API key", () => {
 });
 
 test("clamps parameter values", () => {
-  const params = updateParams(defaultParams, { count: 9, compression: 140 });
+  const params = updateParams(defaultParams, { count: 9, compression: 140, optimizePrompt: true });
   assert.equal(params.count, 4);
   assert.equal(params.compression, 100);
+  assert.equal(params.optimizePrompt, true);
 });
 
 test("creates and filters mock tasks", () => {

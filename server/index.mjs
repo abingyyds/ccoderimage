@@ -240,18 +240,118 @@ function sanitizeParams(value) {
     outputFormat,
     compression: outputFormat === "png" ? "" : clampNumber(Number(params.compression) || 100, 0, 100),
     moderation: params.moderation === "low" ? "low" : "auto",
-    count: clampNumber(Number(params.count) || 1, 1, 4)
+    count: clampNumber(Number(params.count) || 1, 1, 4),
+    optimizePrompt: Boolean(params.optimizePrompt)
   };
 }
 
 async function generateOpenAIImage(settings, prompt, params, references) {
+  const finalPrompt = params.optimizePrompt ? await optimizeImagePrompt(settings, prompt, params, references) : prompt;
+  const promptResult = finalPrompt === prompt ? {} : { revisedPrompt: finalPrompt, optimizedPrompt: finalPrompt };
   if (settings.apiMode === "responses") {
-    return generateViaResponsesApi(settings, prompt, params, references);
+    return { ...(await generateViaResponsesApi(settings, finalPrompt, params, references)), ...promptResult };
   }
   if (references.length > 0) {
-    return editViaImagesApi(settings, prompt, params, references);
+    return { ...(await editViaImagesApi(settings, finalPrompt, params, references)), ...promptResult };
   }
-  return generateViaImagesApi(settings, prompt, params);
+  return { ...(await generateViaImagesApi(settings, finalPrompt, params)), ...promptResult };
+}
+
+async function optimizeImagePrompt(settings, prompt, params, references) {
+  const content = buildPromptOptimizationMessages(prompt, params, references);
+  try {
+    return await optimizePromptViaChatCompletions(settings, content);
+  } catch (error) {
+    if (!isEndpointUnsupported(error)) throw error;
+    return optimizePromptViaResponses(settings, content);
+  }
+}
+
+async function optimizePromptViaChatCompletions(settings, messages) {
+  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/chat/completions"), settings, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${settings.apiKey.trim()}`
+    },
+    body: JSON.stringify({
+      model: responseModel(settings.mainModelId),
+      messages
+    })
+  });
+  const json = await parseJson(upstream);
+  assertOk(upstream, json);
+  const optimized = String(json.choices?.[0]?.message?.content || "").trim();
+  if (!optimized) throw new Error("提示词优化未返回内容");
+  return stripPromptEnvelope(optimized);
+}
+
+async function optimizePromptViaResponses(settings, messages) {
+  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/responses"), settings, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${settings.apiKey.trim()}`
+    },
+    body: JSON.stringify({
+      model: responseModel(settings.mainModelId),
+      input: messages.map((message) => ({ role: message.role, content: [{ type: "input_text", text: message.content }] }))
+    })
+  });
+  const json = await parseJson(upstream);
+  assertOk(upstream, json);
+  const optimized = extractResponsesText(json);
+  if (!optimized) throw new Error("提示词优化未返回内容");
+  return stripPromptEnvelope(optimized);
+}
+
+function buildPromptOptimizationMessages(prompt, params, references) {
+  const referenceNote = references.length
+    ? `用户上传了 ${references.length} 张参考图，优化后的提示词应保留对参考图的编辑或融合意图。`
+    : "用户没有上传参考图。";
+  return [
+    {
+      role: "system",
+      content: [
+        "你是图片生成提示词优化器。",
+        "把用户的原始提示词改写成更适合图像生成模型的高质量提示词。",
+        "保留用户意图、主体、文字内容、语言和限制，不要加入与用户要求冲突的新元素。",
+        "补充有帮助的画面细节、构图、光线、材质、镜头、风格和质量约束。",
+        "只输出优化后的提示词本身，不要解释，不要使用 Markdown。"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: [
+        `原始提示词：${prompt}`,
+        `图片参数：尺寸 ${params.size}，质量 ${params.quality}，格式 ${params.outputFormat}，数量 ${params.count}`,
+        referenceNote
+      ].join("\n")
+    }
+  ];
+}
+
+function extractResponsesText(json) {
+  if (typeof json.output_text === "string") return json.output_text.trim();
+  const parts = [];
+  for (const item of Array.isArray(json.output) ? json.output : []) {
+    for (const content of Array.isArray(item.content) ? item.content : []) {
+      if (typeof content.text === "string") parts.push(content.text);
+    }
+  }
+  return parts.join("\n").trim();
+}
+
+function stripPromptEnvelope(value) {
+  return String(value)
+    .replace(/^```(?:text|markdown)?/i, "")
+    .replace(/```$/i, "")
+    .replace(/^\s*(优化后的提示词|提示词|Prompt)\s*[:：]\s*/i, "")
+    .trim();
+}
+
+function isEndpointUnsupported(error) {
+  return /404|405|not found|unsupported|cannot\s+(get|post)|不支持|接口不存在/i.test(errorMessage(error));
 }
 
 async function generateViaImagesApi(settings, prompt, params) {

@@ -23,6 +23,7 @@ export type Params = {
   compression: number | "";
   moderation: Moderation;
   count: number;
+  optimizePrompt: boolean;
 };
 
 export type ReferenceImage = {
@@ -75,7 +76,8 @@ export const defaultParams: Params = {
   outputFormat: "png",
   compression: "",
   moderation: "auto",
-  count: 1
+  count: 1,
+  optimizePrompt: false
 };
 
 export function normalizePrompt(prompt: string): string {
@@ -93,6 +95,7 @@ export function updateParams(current: Params, patch: Partial<Params>): Params {
   return {
     ...next,
     count: clampNumber(Number(next.count), 1, 4),
+    optimizePrompt: Boolean(next.optimizePrompt),
     compression: next.compression === "" ? "" : clampNumber(Number(next.compression), 0, 100)
   };
 }
@@ -181,7 +184,8 @@ export function failTask(task: Task, error: string, now = Date.now()): Task {
 
 export function summarizeParams(params: Params): string {
   const compression = params.outputFormat === "png" ? "PNG 无压缩" : `${params.compression || 100}%`;
-  return `${params.size} · ${params.quality} · ${params.outputFormat.toUpperCase()} · ${compression} · ${params.count} 张`;
+  const optimize = params.optimizePrompt ? " · 提示词优化" : "";
+  return `${params.size} · ${params.quality} · ${params.outputFormat.toUpperCase()} · ${compression} · ${params.count} 张${optimize}`;
 }
 
 function buildMockOutputs(task: Task): string[] {

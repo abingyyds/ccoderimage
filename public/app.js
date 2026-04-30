@@ -5,14 +5,14 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-ccoder-internal";
+const appVersion = "20260501-prompt-optimize";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
 
 const defaults = {
   settings: { apiUrl: defaultApiUrl, apiKey: "", apiMode: "images", mainModelId: "gpt-5.5", modelId: "gpt-image-2", timeoutSeconds: 120 },
-  params: { size: "auto", quality: "auto", outputFormat: "png", count: 1 }
+  params: { size: "auto", quality: "auto", outputFormat: "png", count: 1, optimizePrompt: false }
 };
 
 const state = {
@@ -38,7 +38,7 @@ document.addEventListener("DOMContentLoaded", () => {
   for (const id of [
     "statusLine", "templatesPanel", "generatePanel", "templateSearch", "categoryFilter", "featuredOnly",
     "templateGrid", "templateCount", "templateHint", "loadMoreBtn", "promptInput", "qualitySelect",
-    "formatSelect", "countInput", "sizeInput", "referenceInput", "referenceList", "generateBtn",
+    "formatSelect", "countInput", "sizeInput", "promptOptimizeInput", "referenceInput", "referenceList", "generateBtn",
     "generationTimer", "historyList", "historyCount", "clearHistoryBtn", "deletedHistoryBtn", "openSettingsBtn", "testConnectionBtn",
     "openSizeBtn", "modalRoot"
   ]) dom[id] = document.getElementById(id);
@@ -77,6 +77,7 @@ function bindEvents() {
   dom.qualitySelect.addEventListener("change", () => saveParams({ quality: dom.qualitySelect.value }));
   dom.formatSelect.addEventListener("change", () => saveParams({ outputFormat: dom.formatSelect.value }));
   dom.countInput.addEventListener("input", () => saveParams({ count: clamp(Number(dom.countInput.value), 1, 4) }));
+  dom.promptOptimizeInput.addEventListener("change", () => saveParams({ optimizePrompt: dom.promptOptimizeInput.checked }));
   dom.referenceInput.addEventListener("change", () => void addReferences());
   dom.generateBtn.addEventListener("click", () => void generateImage());
   dom.clearHistoryBtn.addEventListener("click", clearHistory);
@@ -322,10 +323,12 @@ function syncControls() {
   dom.formatSelect.value = state.params.outputFormat;
   dom.countInput.value = String(state.params.count);
   dom.sizeInput.value = state.params.size;
+  dom.promptOptimizeInput.checked = Boolean(state.params.optimizePrompt);
 }
 
 function saveParams(patch) {
-  state.params = { ...state.params, ...patch, count: clamp(Number({ ...state.params, ...patch }.count), 1, 4) };
+  const next = { ...state.params, ...patch };
+  state.params = { ...next, count: clamp(Number(next.count), 1, 4), optimizePrompt: Boolean(next.optimizePrompt) };
   tryWriteStore(keys.params, state.params);
   syncControls();
 }
@@ -378,7 +381,7 @@ async function generateImage() {
   persistHistory();
   renderHistory();
   startGenerationTimer(task);
-  status(`生成请求已提交：${task.settingsSummary}，耗时 00:00`);
+  status(`${state.params.optimizePrompt ? "提示词优化中" : "生成请求已提交"}：${task.settingsSummary}，耗时 00:00`);
   try {
     const response = await fetch("/api/generate", {
       method: "POST",
@@ -388,7 +391,7 @@ async function generateImage() {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.message || data.error || `${response.status} ${response.statusText}`);
     task.images = normalizeImages(data);
-    task.revisedPrompt = data.revisedPrompt || data.revised_prompt || "";
+    task.revisedPrompt = data.optimizedPrompt || data.revisedPrompt || data.revised_prompt || "";
     task.status = "succeeded";
     status(task.images.length ? `生成完成：${task.images.length} 张，耗时 ${formatElapsed(task)}${data.historySaved === false ? "，历史未入库" : ""}` : `生成完成，但未返回图片，耗时 ${formatElapsed(task)}`);
   } catch (error) {
@@ -527,7 +530,7 @@ function normalizeHistoryTask(task) {
   return {
     id: String(task.id || `task-${Date.now().toString(36)}`),
     prompt: String(task.prompt || ""),
-    params: { ...defaults.params, ...(task.params || {}) },
+    params: { ...defaults.params, ...(task.params || {}), optimizePrompt: Boolean(task.params?.optimizePrompt) },
     references: Array.isArray(task.references) ? task.references : [],
     settingsSummary: String(task.settingsSummary || task.settingsSnapshot || ""),
     status: ["running", "succeeded", "failed"].includes(task.status) ? task.status : "succeeded",
@@ -553,6 +556,7 @@ function historyCard(task) {
     ? `<button class="image-preview-btn" data-preview-task="${attr(task.id)}" data-preview-index="0" type="button" aria-label="预览图片"><img src="${attr(task.images[0])}" alt="${attr(task.prompt)}" /><span>点击放大</span></button>`
     : `<div class="history-placeholder">${task.status === "running" ? "生成中" : "无图片"}</div>`;
   const settingsPart = task.settingsSummary ? `${esc(task.settingsSummary)} · ` : "";
+  const optimizePart = task.params.optimizePrompt ? " · 提示词已优化" : "";
   const saveButton = task.images?.[0] ? `<button type="button" data-download-task="${attr(task.id)}" data-download-index="0">保存</button>` : "";
   const activeActions = `${saveButton}<button type="button" data-reuse-task="${attr(task.id)}">复用</button><button type="button" data-delete-task="${attr(task.id)}">删除</button>`;
   const deletedActions = `<button type="button" data-restore-task="${attr(task.id)}">恢复</button><button type="button" data-purge-task="${attr(task.id)}">清除</button>`;
@@ -562,7 +566,7 @@ function historyCard(task) {
       <div class="history-body">
         <div class="meta-row"><span>${task.status === "succeeded" ? "成功" : task.status === "failed" ? "失败" : "生成中"}</span><span data-elapsed-task="${attr(task.id)}">耗时 ${formatElapsed(task)}</span><span>${time(task.createdAt)}</span></div>
         <p>${esc(task.error || task.prompt)}</p>
-        <small>${settingsPart}${esc(task.params.size)} · ${esc(task.params.quality)} · ${esc(task.params.outputFormat)} · ${task.params.count} 张</small>
+        <small>${settingsPart}${esc(task.params.size)} · ${esc(task.params.quality)} · ${esc(task.params.outputFormat)} · ${task.params.count} 张${optimizePart}</small>
         <div class="row-actions">${deletedMode ? deletedActions : activeActions}</div>
       </div>
     </article>`;
