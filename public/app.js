@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-reference-edits";
+const appVersion = "20260501-optimize-small-payload";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
@@ -347,7 +347,7 @@ async function optimizePrompt() {
     const response = await fetch("/api/optimize-prompt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, settings: state.settings, params: state.params, references: requestReferences() })
+      body: JSON.stringify({ prompt, settings: state.settings, params: state.params, references: optimizeReferenceSummary() })
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.ok === false) throw new Error(data.message || data.error || `${response.status} ${response.statusText}`);
@@ -446,6 +446,10 @@ function referenceSummary(reference) {
     id: String(reference.id || ""),
     name: String(reference.name || "reference.png")
   };
+}
+
+function optimizeReferenceSummary() {
+  return requestReferences().map(referenceSummary);
 }
 
 function isSupportedReferenceDataUrl(dataUrl) {

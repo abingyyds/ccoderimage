@@ -81,18 +81,13 @@ app.post("/api/optimize-prompt", async (request, response) => {
   const settings = sanitizeSettings(request.body?.settings);
   const prompt = String(request.body?.prompt || "").trim();
   const params = sanitizeParams(request.body?.params);
-  const references = sanitizeReferenceImages(request.body?.references);
+  const references = sanitizeReferenceSummary(request.body?.references);
   if (!settings.apiKey.trim()) {
     response.status(400).json({ ok: false, message: "请先配置 API" });
     return;
   }
   if (!prompt) {
     response.status(400).json({ ok: false, message: "请输入提示词" });
-    return;
-  }
-  const unsupportedReference = references.find((reference) => reference?.dataUrl && !isSupportedReferenceDataUrl(reference.dataUrl));
-  if (unsupportedReference) {
-    response.status(400).json({ ok: false, message: `参考图格式不支持：${unsupportedReference.name || "reference"}。请使用 JPG、PNG 或 WebP` });
     return;
   }
   try {
@@ -916,6 +911,13 @@ function sanitizeReferenceImages(value) {
       sourceKey: String(reference?.sourceKey || "")
     }];
   });
+}
+
+function sanitizeReferenceSummary(value) {
+  return (Array.isArray(value) ? value : []).map((reference, index) => ({
+    id: String(reference?.id || `ref-${index + 1}`),
+    name: String(reference?.name || `reference-${index + 1}.png`)
+  }));
 }
 
 function extensionFromDataUrl(dataUrl) {
