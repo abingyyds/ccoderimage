@@ -37,16 +37,6 @@ type ResponsesApiResponse = {
   message?: string;
 };
 
-type ChatContentPart = {
-  text?: string;
-};
-
-type ChatCompletionsResponse = {
-  choices?: Array<{ message?: { content?: string | ChatContentPart[] } }>;
-  error?: { message?: string; type?: string; code?: string };
-  message?: string;
-};
-
 export async function generateOpenAIImage(
   settings: Settings,
   prompt: string,
@@ -108,6 +98,22 @@ export function buildImagesGenerationBody(settings: Settings, prompt: string, pa
   return body;
 }
 
+export function buildImagesEditBody(
+  settings: Settings,
+  prompt: string,
+  params: Params,
+  references: ReferenceImage[]
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: settings.modelId.trim() || "gpt-image-2",
+    prompt,
+    n: params.count,
+    images: references.map((reference) => ({ image_url: reference.dataUrl }))
+  };
+  addImageOptions(body, params);
+  return body;
+}
+
 export function buildResponsesBody(
   settings: Settings,
   prompt: string,
@@ -152,12 +158,7 @@ async function generateWithReferences(
   params: Params,
   references: ReferenceImage[]
 ): Promise<ImageApiResult> {
-  try {
-    return { ...(await editViaImagesApi(settings, prompt, params, references)), referenceMode: "edits" };
-  } catch {
-    const referencedPrompt = await describeReferencesForImagePrompt(settings, prompt, params, references);
-    return { ...(await generateViaImagesApi(settings, referencedPrompt, params)), revisedPrompt: referencedPrompt, referenceMode: "vision-prompt" };
-  }
+  return { ...(await editViaImagesApi(settings, prompt, params, references)), referenceMode: "edits" };
 }
 
 async function editViaImagesApi(
@@ -166,13 +167,37 @@ async function editViaImagesApi(
   params: Params,
   references: ReferenceImage[]
 ): Promise<ImageApiResult> {
+  const errors: string[] = [];
+  const fieldNames = references.length > 1 ? ["image[]", "image"] : ["image", "image[]"];
+  for (const fieldName of fieldNames) {
+    try {
+      return await editViaImagesMultipart(settings, prompt, params, references, fieldName);
+    } catch (error) {
+      errors.push(`${fieldName}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  try {
+    return await editViaImagesJson(settings, prompt, params, references);
+  } catch (error) {
+    errors.push(`json: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  throw new Error(`参考图编辑接口失败：${errors.join("；")}`);
+}
+
+async function editViaImagesMultipart(
+  settings: Settings,
+  prompt: string,
+  params: Params,
+  references: ReferenceImage[],
+  imageFieldName: string
+): Promise<ImageApiResult> {
   const form = new FormData();
   form.set("model", settings.modelId.trim() || "gpt-image-2");
   form.set("prompt", prompt);
   form.set("n", String(params.count));
   addImageOptions(form, params);
   for (const reference of references) {
-    form.append("image", dataUrlToBlob(reference.dataUrl), reference.name || "reference.png");
+    form.append(imageFieldName, dataUrlToBlob(reference.dataUrl), reference.name || "reference.png");
   }
   const response = await fetchWithTimeout(joinUrl(settings.apiUrl, "/images/edits"), settings, {
     method: "POST",
@@ -184,28 +209,23 @@ async function editViaImagesApi(
   return imagesResult(json, params.outputFormat);
 }
 
-async function describeReferencesForImagePrompt(
+async function editViaImagesJson(
   settings: Settings,
   prompt: string,
   params: Params,
   references: ReferenceImage[]
-): Promise<string> {
-  const response = await fetchWithTimeout(joinUrl(settings.apiUrl, "/chat/completions"), settings, {
+): Promise<ImageApiResult> {
+  const response = await fetchWithTimeout(joinUrl(settings.apiUrl, "/images/edits"), settings, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...authHeaders(settings)
     },
-    body: JSON.stringify({
-      model: responseModel(settings.mainModelId),
-      messages: buildReferencePromptMessages(prompt, params, references)
-    })
+    body: JSON.stringify(buildImagesEditBody(settings, prompt, params, references))
   });
-  const json = await parseJson<ChatCompletionsResponse>(response);
+  const json = await parseJson<ImagesApiResponse>(response);
   assertOk(response, json);
-  const enhanced = chatMessageText(json.choices?.[0]?.message?.content);
-  if (!enhanced) throw new Error("参考图分析未返回内容");
-  return stripPromptEnvelope(enhanced);
+  return imagesResult(json, params.outputFormat);
 }
 
 async function generateViaResponsesApi(
@@ -296,7 +316,7 @@ async function parseJson<T>(response: Response): Promise<T> {
   }
 }
 
-function assertOk(response: Response, json: ImagesApiResponse | ResponsesApiResponse | ChatCompletionsResponse): void {
+function assertOk(response: Response, json: ImagesApiResponse | ResponsesApiResponse): void {
   if (response.ok && !json.error) return;
   const message = json.error?.message ?? json.message ?? `${response.status} ${response.statusText}`;
   throw new Error(message);
@@ -326,55 +346,6 @@ function authHeaders(settings: Settings): Record<string, string> {
     Authorization: `Bearer ${apiKey}`,
     "x-api-key": apiKey
   };
-}
-
-function buildReferencePromptMessages(prompt: string, params: Params, references: ReferenceImage[]): Array<Record<string, unknown>> {
-  return [
-    {
-      role: "system",
-      content: [
-        "你是图片生成请求的参考图分析器。",
-        "用户会提供原始提示词和一到多张参考图。",
-        "请读取参考图，将主体身份、姿态、构图、服装、材质、色彩、风格和关键视觉特征转写进最终图像生成提示词。",
-        "必须保留用户原始意图，不要编造冲突内容。",
-        "只输出最终可直接用于图片生成的提示词，不要解释，不要 Markdown。"
-      ].join("\n")
-    },
-    {
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: [
-            `原始提示词：${prompt}`,
-            `图片参数：尺寸 ${params.size}，质量 ${params.quality}，格式 ${params.outputFormat}，数量 ${params.count}`,
-            `参考图数量：${references.length}`,
-            "请把参考图中的关键视觉信息融合到提示词中。"
-          ].join("\n")
-        },
-        ...references.map((reference) => ({
-          type: "image_url",
-          image_url: { url: reference.dataUrl }
-        }))
-      ]
-    }
-  ];
-}
-
-function chatMessageText(content: string | ChatContentPart[] | undefined): string {
-  if (typeof content === "string") return content.trim();
-  if (Array.isArray(content)) {
-    return content.map((part) => part.text || "").join("\n").trim();
-  }
-  return "";
-}
-
-function stripPromptEnvelope(value: string): string {
-  return String(value)
-    .replace(/^```(?:text|markdown)?/i, "")
-    .replace(/```$/i, "")
-    .replace(/^\s*(优化后的提示词|提示词|Prompt)\s*[:：]\s*/i, "")
-    .trim();
 }
 
 function dataUrlToBlob(dataUrl: string): Blob {

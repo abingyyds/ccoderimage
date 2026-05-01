@@ -365,62 +365,6 @@ function responseTextMessage(message) {
   };
 }
 
-async function describeReferencesForImagePrompt(settings, prompt, params, references) {
-  const messages = buildReferencePromptMessages(prompt, params, references);
-  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/chat/completions"), settings, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(settings)
-    },
-    body: JSON.stringify({
-      model: responseModel(settings.mainModelId),
-      messages
-    })
-  });
-  const json = await parseJson(upstream);
-  assertOk(upstream, json);
-  const enhanced = chatMessageText(json.choices?.[0]?.message?.content);
-  if (!enhanced) throw new Error("参考图分析未返回内容");
-  return stripPromptEnvelope(enhanced);
-}
-
-function buildReferencePromptMessages(prompt, params, references) {
-  return [
-    {
-      role: "system",
-      content: [
-        "你是图片生成请求的参考图分析器。",
-        "用户会提供原始提示词和一到多张参考图。",
-        "请读取参考图，将主体身份、姿态、构图、服装、材质、色彩、风格和关键视觉特征转写进最终图像生成提示词。",
-        "必须保留用户原始意图，不要编造冲突内容。",
-        "只输出最终可直接用于图片生成的提示词，不要解释，不要 Markdown。"
-      ].join("\n")
-    },
-    {
-      role: "user",
-      content: [
-        { type: "text", text: [
-          `原始提示词：${prompt}`,
-          `图片参数：尺寸 ${params.size}，质量 ${params.quality}，格式 ${params.outputFormat}，数量 ${params.count}`,
-          `参考图数量：${references.length}`,
-          "请把参考图中的关键视觉信息融合到提示词中。"
-        ].join("\n") },
-        ...references.map(chatImageContent)
-      ]
-    }
-  ];
-}
-
-function chatImageContent(reference) {
-  return {
-    type: "image_url",
-    image_url: {
-      url: reference.dataUrl
-    }
-  };
-}
-
 function chatMessageText(content) {
   if (typeof content === "string") return content.trim();
   if (Array.isArray(content)) {
@@ -448,34 +392,10 @@ async function generateOpenAIImage(settings, prompt, params, references) {
 }
 
 async function generateWithReferences(settings, prompt, params, references) {
-  const errors = [];
-  try {
-    return {
-      ...(await editViaImagesApi(settings, prompt, params, references)),
-      referenceMode: "edits"
-    };
-  } catch (error) {
-    errors.push(`edits: ${errorMessage(error)}`);
-  }
-  try {
-    const referencedPrompt = await describeReferencesForImagePrompt(settings, prompt, params, references);
-    return {
-      ...(await generateViaImagesApi(settings, referencedPrompt, params)),
-      revisedPrompt: referencedPrompt,
-      referenceMode: "vision-prompt"
-    };
-  } catch (error) {
-    errors.push(`vision-prompt: ${errorMessage(error)}`);
-  }
-  try {
-    return {
-      ...(await generateViaResponsesApi(settings, prompt, params, references)),
-      referenceMode: "responses"
-    };
-  } catch (error) {
-    errors.push(`responses: ${errorMessage(error)}`);
-  }
-  throw new Error(`参考图生成失败：${errors.join("；")}`);
+  return {
+    ...(await editViaImagesApi(settings, prompt, params, references)),
+    referenceMode: "edits"
+  };
 }
 
 async function generateViaImagesApi(settings, prompt, params) {
@@ -493,6 +413,24 @@ async function generateViaImagesApi(settings, prompt, params) {
 }
 
 async function editViaImagesApi(settings, prompt, params, references) {
+  const errors = [];
+  const fieldNames = references.length > 1 ? ["image[]", "image"] : ["image", "image[]"];
+  for (const fieldName of fieldNames) {
+    try {
+      return await editViaImagesMultipart(settings, prompt, params, references, fieldName);
+    } catch (error) {
+      errors.push(`${fieldName}: ${errorMessage(error)}`);
+    }
+  }
+  try {
+    return await editViaImagesJson(settings, prompt, params, references);
+  } catch (error) {
+    errors.push(`json: ${errorMessage(error)}`);
+  }
+  throw new Error(`参考图编辑接口失败：${errors.join("；")}`);
+}
+
+async function editViaImagesMultipart(settings, prompt, params, references, imageFieldName) {
   const form = new FormData();
   form.set("model", settings.modelId.trim() || "gpt-image-2");
   form.set("prompt", prompt);
@@ -500,12 +438,26 @@ async function editViaImagesApi(settings, prompt, params, references) {
   addImageOptions(form, params);
   for (const reference of references) {
     if (!reference?.dataUrl) continue;
-    form.append("image", dataUrlToBlob(reference.dataUrl), reference.name || "reference.png");
+    form.append(imageFieldName, dataUrlToBlob(reference.dataUrl), reference.name || "reference.png");
   }
   const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/images/edits"), settings, {
     method: "POST",
     headers: authHeaders(settings),
     body: form
+  });
+  const json = await parseJson(upstream);
+  assertOk(upstream, json);
+  return imagesResult(json, params.outputFormat);
+}
+
+async function editViaImagesJson(settings, prompt, params, references) {
+  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/images/edits"), settings, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(settings)
+    },
+    body: JSON.stringify(buildImagesEditBody(settings, prompt, params, references))
   });
   const json = await parseJson(upstream);
   assertOk(upstream, json);
@@ -533,6 +485,17 @@ function buildImagesGenerationBody(settings, prompt, params) {
     model: settings.modelId.trim() || "gpt-image-2",
     prompt,
     n: params.count
+  };
+  addImageOptions(body, params);
+  return body;
+}
+
+function buildImagesEditBody(settings, prompt, params, references) {
+  const body = {
+    model: settings.modelId.trim() || "gpt-image-2",
+    prompt,
+    n: params.count,
+    images: references.map((reference) => ({ image_url: reference.dataUrl }))
   };
   addImageOptions(body, params);
   return body;
@@ -889,7 +852,7 @@ function trimHistoryStore(history) {
 }
 
 function normalizeReferenceMode(value) {
-  return ["responses", "edits", "vision-prompt", "vision_prompt"].includes(value) ? String(value).replace("_", "-") : "";
+  return ["responses", "edits"].includes(value) ? value : "";
 }
 
 function historyReferences(references) {

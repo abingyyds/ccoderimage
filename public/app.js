@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-optimize-fallback";
+const appVersion = "20260501-reference-edits";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
@@ -466,7 +466,7 @@ async function generateImage() {
   persistHistory();
   renderHistory();
   startGenerationTimer(task);
-  status(`生成请求已提交：${task.settingsSummary}，耗时 00:00`);
+  status(`生成请求已提交：${task.settingsSummary}${references.length ? " · 参考图编辑模式" : ""}，耗时 00:00`);
   try {
     const response = await fetch("/api/generate", {
       method: "POST",
