@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260501-optimize-small-payload";
+const appVersion = "20260502-reference-upload-fix";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
@@ -380,7 +380,8 @@ async function addReferences() {
   const skipped = files.length - supported.length;
   const existing = new Set(state.references.map((reference) => reference.sourceKey).filter(Boolean));
   const fresh = supported.filter((file) => !existing.has(referenceFileKey(file)));
-  const refs = await Promise.all(fresh.map(readFile));
+  if (fresh.length) status("参考图处理中");
+  const refs = await Promise.all(fresh.map(readReferenceFile));
   state.references.push(...refs.filter((reference) => reference.dataUrl));
   dom.referenceInput.value = "";
   renderReferences();
@@ -388,18 +389,57 @@ async function addReferences() {
     status("参考图仅支持 JPG、PNG、WebP；HEIC 请先转为 JPG 或 PNG");
   } else if (supported.length && !fresh.length) {
     status("参考图已在列表中");
+  } else if (fresh.length) {
+    status(`已添加 ${fresh.length} 张参考图，已压缩用于上传`);
   }
 }
 
-function readFile(file) {
+async function readReferenceFile(file) {
+  const compressed = await compressReferenceFile(file);
+  return {
+    id: `ref-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    name: file.name.replace(/\.[^.]+$/, ".jpg"),
+    originalName: file.name,
+    dataUrl: compressed.dataUrl,
+    sourceKey: referenceFileKey(file),
+    originalSize: file.size,
+    uploadSize: compressed.size
+  };
+}
+
+function compressReferenceFile(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(img.src);
+      const maxEdge = 1280;
+      const scale = Math.min(1, maxEdge / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+      const width = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
+      const height = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        reject(new Error("参考图压缩失败"));
+        return;
+      }
+      context.drawImage(img, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+      resolve({ dataUrl, size: dataUrl.length, width, height });
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(img.src);
+      readFileAsDataUrl(file).then((dataUrl) => resolve({ dataUrl, size: dataUrl.length })).catch(reject);
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve({
-      id: `ref-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      name: file.name,
-      dataUrl: String(reader.result || ""),
-      sourceKey: referenceFileKey(file)
-    });
+    reader.onload = () => resolve(String(reader.result || ""));
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });

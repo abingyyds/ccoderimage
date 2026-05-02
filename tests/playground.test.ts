@@ -68,10 +68,10 @@ test("builds Responses API image_generation payload", () => {
     [{ id: "1", name: "ref.png", dataUrl: "data:image/png;base64,AAAA", mask: false }]
   );
   assert.equal(body.model, "gpt-5.5");
-  assert.deepEqual(body.tool_choice, { type: "image_generation" });
+  assert.equal("tool_choice" in body, false);
   const tools = body.tools as Array<Record<string, unknown>>;
   assert.equal(tools[0]?.type, "image_generation");
-  assert.equal("action" in (tools[0] || {}), false);
+  assert.equal(tools[0]?.action, "edit");
   const input = body.input as Array<{ content?: Array<Record<string, unknown>> }>;
   assert.deepEqual(input[0]?.content?.[1], { type: "input_image", image_url: "data:image/png;base64,AAAA" });
 });

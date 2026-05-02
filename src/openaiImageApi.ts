@@ -121,7 +121,8 @@ export function buildResponsesBody(
   references: ReferenceImage[]
 ): Record<string, unknown> {
   const tool: Record<string, unknown> = {
-    type: settings.toolName.trim() || "image_generation"
+    type: settings.toolName.trim() || "image_generation",
+    action: references.length > 0 ? "edit" : "generate"
   };
   addImageOptions(tool, params);
 
@@ -133,8 +134,7 @@ export function buildResponsesBody(
   return {
     model: responseModel(settings.mainModelId),
     input: [{ role: "user", content }],
-    tools: [tool],
-    tool_choice: { type: settings.toolName.trim() || "image_generation" }
+    tools: [tool]
   };
 }
 
@@ -158,7 +158,11 @@ async function generateWithReferences(
   params: Params,
   references: ReferenceImage[]
 ): Promise<ImageApiResult> {
-  return { ...(await editViaImagesApi(settings, prompt, params, references)), referenceMode: "edits" };
+  try {
+    return { ...(await generateViaResponsesApi(settings, prompt, params, references)), referenceMode: "responses-edit" };
+  } catch {
+    return { ...(await editViaImagesApi(settings, prompt, params, references)), referenceMode: "edits" };
+  }
 }
 
 async function editViaImagesApi(

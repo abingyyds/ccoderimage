@@ -28,6 +28,21 @@ app.use((_request, response, next) => {
   next();
 });
 app.use(express.json({ limit: "30mb" }));
+app.use((error, _request, response, next) => {
+  if (!error) {
+    next();
+    return;
+  }
+  if (error.type === "request.aborted" || error.code === "ECONNABORTED") {
+    response.status(400).json({ ok: false, message: "请求上传中断，请压缩参考图后重试" });
+    return;
+  }
+  if (error.type === "entity.too.large") {
+    response.status(413).json({ ok: false, message: "参考图过大，请压缩后重试" });
+    return;
+  }
+  next(error);
+});
 app.use("/generated-history", express.static(historyImageDir));
 
 app.get("/api/health", (_request, response) => {
@@ -387,10 +402,24 @@ async function generateOpenAIImage(settings, prompt, params, references) {
 }
 
 async function generateWithReferences(settings, prompt, params, references) {
-  return {
-    ...(await editViaImagesApi(settings, prompt, params, references)),
-    referenceMode: "edits"
-  };
+  const errors = [];
+  try {
+    return {
+      ...(await generateViaResponsesApi(settings, prompt, params, references)),
+      referenceMode: "responses-edit"
+    };
+  } catch (error) {
+    errors.push(`responses-edit: ${errorMessage(error)}`);
+  }
+  try {
+    return {
+      ...(await editViaImagesApi(settings, prompt, params, references)),
+      referenceMode: "edits"
+    };
+  } catch (error) {
+    errors.push(`edits: ${errorMessage(error)}`);
+  }
+  throw new Error(`参考图编辑接口失败：${errors.join("；")}`);
 }
 
 async function generateViaImagesApi(settings, prompt, params) {
@@ -498,7 +527,8 @@ function buildImagesEditBody(settings, prompt, params, references) {
 
 function buildResponsesBody(settings, prompt, params, references) {
   const tool = {
-    type: settings.toolName.trim() || "image_generation"
+    type: settings.toolName.trim() || "image_generation",
+    action: references.length > 0 ? "edit" : "generate"
   };
   addImageOptions(tool, params);
   return {
@@ -512,8 +542,7 @@ function buildResponsesBody(settings, prompt, params, references) {
         ]
       }
     ],
-    tools: [tool],
-    tool_choice: { type: settings.toolName.trim() || "image_generation" }
+    tools: [tool]
   };
 }
 
@@ -847,7 +876,7 @@ function trimHistoryStore(history) {
 }
 
 function normalizeReferenceMode(value) {
-  return ["responses", "edits"].includes(value) ? value : "";
+  return ["responses", "responses-edit", "edits"].includes(value) ? value : "";
 }
 
 function historyReferences(references) {
