@@ -29,6 +29,13 @@ app.use((_request, response, next) => {
   response.setHeader("Access-Control-Allow-Origin", "*");
   next();
 });
+app.use((request, response, next) => {
+  const path = request.path || "";
+  if (request.method === "GET" && (path === "/" || path === "/index.html" || path === "/app.js" || path === "/styles.css")) {
+    response.setHeader("Cache-Control", "no-store, max-age=0");
+  }
+  next();
+});
 app.use(express.json({ limit: "30mb" }));
 app.use((error, _request, response, next) => {
   if (!error) {
