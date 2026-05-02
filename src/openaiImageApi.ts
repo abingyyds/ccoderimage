@@ -158,11 +158,10 @@ async function generateWithReferences(
   params: Params,
   references: ReferenceImage[]
 ): Promise<ImageApiResult> {
-  try {
+  if (settings.apiMode === "responses") {
     return { ...(await generateViaResponsesApi(settings, prompt, params, references)), referenceMode: "responses-edit" };
-  } catch {
-    return { ...(await editViaImagesApi(settings, prompt, params, references)), referenceMode: "edits" };
   }
+  return { ...(await editViaImagesApi(settings, prompt, params, references)), referenceMode: "edits" };
 }
 
 async function editViaImagesApi(

@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260502-direct-reference-edit";
+const appVersion = "20260502-mode-specific-reference";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
@@ -512,14 +512,11 @@ async function generateImage() {
   startGenerationTimer(task);
   status(`生成请求已提交：${task.settingsSummary}${references.length ? " · 参考图编辑模式" : ""}，耗时 00:00`);
   try {
-    const data = references.length
-      ? await generateReferenceImageDirect(prompt, state.settings, state.params, references)
-      : await generateImageViaServer(task, prompt);
+    const data = await generateImageViaServer(task, prompt, references);
     task.images = normalizeImages(data);
     task.revisedPrompt = data.revisedPrompt || data.revised_prompt || "";
     task.referenceMode = data.referenceMode || "";
     task.status = "succeeded";
-    if (data.historySaved === false) void syncTaskToServer(task);
     const referenceStatus = task.referenceMode ? `，参考图模式 ${task.referenceMode}` : "";
     status(task.images.length ? `生成完成：${task.images.length} 张，耗时 ${formatElapsed(task)}${referenceStatus}${data.historySaved === false ? "，历史未入库" : ""}` : `生成完成，但未返回图片，耗时 ${formatElapsed(task)}${referenceStatus}`);
   } catch (error) {
@@ -534,110 +531,15 @@ async function generateImage() {
   }
 }
 
-async function syncTaskToServer(task) {
-  try {
-    await fetch("/api/history/sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ history: [task] })
-    });
-  } catch {
-    // Local history is already saved; background server sync is best effort.
-  }
-}
-
-async function generateImageViaServer(task, prompt) {
+async function generateImageViaServer(task, prompt, references) {
   const response = await fetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ taskId: task.id, createdAt: task.createdAt, prompt, settings: state.settings, params: state.params, references: [] })
+    body: JSON.stringify({ taskId: task.id, createdAt: task.createdAt, prompt, settings: state.settings, params: state.params, references })
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.message || data.error || `${response.status} ${response.statusText}`);
   return data;
-}
-
-async function generateReferenceImageDirect(prompt, settings, params, references) {
-  const apiKey = String(settings?.apiKey || "").trim();
-  if (!apiKey) throw new Error("请先配置 API");
-  const errors = [];
-  try {
-    const json = await postUpstreamJson(settings, "/responses", buildResponsesImageBody(settings, prompt, params, references));
-    const images = responseImages(json, params.outputFormat);
-    if (!images.length) throw new Error("API 未返回图片数据");
-    return { ok: true, images, revisedPrompt: responseRevisedPrompt(json), referenceMode: "responses-edit", historySaved: false };
-  } catch (error) {
-    errors.push(`responses-edit: ${errorMessage(error)}`);
-  }
-  try {
-    const json = await postUpstreamImageEdit(settings, prompt, params, references);
-    const result = imagesResult(json, params.outputFormat);
-    return { ok: true, ...result, referenceMode: "edits", historySaved: false };
-  } catch (error) {
-    errors.push(`edits: ${errorMessage(error)}`);
-  }
-  throw new Error(`参考图编辑接口失败：${errors.join("；")}`);
-}
-
-async function postUpstreamJson(settings, path, body) {
-  const response = await fetch(`${normalizeApiBaseUrl(settings.apiUrl)}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(settings)
-    },
-    body: JSON.stringify(body)
-  });
-  const json = await parseResponseJson(response);
-  assertUpstreamOk(response, json);
-  return json;
-}
-
-async function postUpstreamImageEdit(settings, prompt, params, references) {
-  const errors = [];
-  const fieldNames = references.length > 1 ? ["image[]", "image"] : ["image", "image[]"];
-  for (const fieldName of fieldNames) {
-    try {
-      const form = new FormData();
-      form.set("model", String(settings.modelId || "gpt-image-2").trim() || "gpt-image-2");
-      form.set("prompt", prompt);
-      form.set("n", String(params.count));
-      addImageOptions(form, params);
-      for (const reference of references) {
-        form.append(fieldName, dataUrlToBlob(reference.dataUrl), reference.name || "reference.jpg");
-      }
-      const response = await fetch(`${normalizeApiBaseUrl(settings.apiUrl)}/images/edits`, {
-        method: "POST",
-        headers: authHeaders(settings),
-        body: form
-      });
-      const json = await parseResponseJson(response);
-      assertUpstreamOk(response, json);
-      return json;
-    } catch (error) {
-      errors.push(`${fieldName}: ${errorMessage(error)}`);
-    }
-  }
-  throw new Error(errors.join("；"));
-}
-
-function buildResponsesImageBody(settings, prompt, params, references) {
-  const tool = {
-    type: String(settings.toolName || "image_generation").trim() || "image_generation",
-    action: "edit"
-  };
-  addImageOptions(tool, params);
-  return {
-    model: responseModel(settings.mainModelId),
-    input: [{
-      role: "user",
-      content: [
-        { type: "input_text", text: prompt },
-        ...references.map((reference) => ({ type: "input_image", image_url: reference.dataUrl }))
-      ]
-    }],
-    tools: [tool]
-  };
 }
 
 function normalizeImages(data) {
@@ -649,107 +551,6 @@ function normalizeImages(data) {
     if (item?.b64_json) return [`data:image/png;base64,${item.b64_json}`];
     return [];
   });
-}
-
-function imagesResult(json, format) {
-  const images = (json.data || []).flatMap((item) => {
-    if (item?.b64_json) return [asDataImage(item.b64_json, format)];
-    if (item?.url) return [item.url];
-    return [];
-  });
-  if (!images.length) throw new Error("API 未返回图片数据");
-  return {
-    images,
-    revisedPrompt: (json.data || []).find((item) => item.revised_prompt)?.revised_prompt || ""
-  };
-}
-
-function responseImages(json, format) {
-  const images = [];
-  for (const item of Array.isArray(json.output) ? json.output : []) {
-    if (item?.type === "image_generation_call" && item.result) images.push(responseImageValue(item.result, format));
-    if (item?.type === "output_image" && item.image_url) images.push(String(item.image_url));
-    if (item?.type === "output_image" && item.b64_json) images.push(asDataImage(String(item.b64_json), format));
-    for (const content of Array.isArray(item?.content) ? item.content : []) {
-      if (content?.type === "output_image" && content.image_url) images.push(String(content.image_url));
-      if (content?.type === "output_image" && content.b64_json) images.push(asDataImage(String(content.b64_json), format));
-      if (content?.type === "image_generation_call" && content.result) images.push(responseImageValue(content.result, format));
-    }
-  }
-  return images;
-}
-
-function responseImageValue(value, format) {
-  const text = String(value);
-  if (/^(data:image\/|https?:\/\/)/i.test(text)) return text;
-  return asDataImage(text, format);
-}
-
-function responseRevisedPrompt(json) {
-  for (const item of Array.isArray(json.output) ? json.output : []) {
-    if (item?.revised_prompt) return String(item.revised_prompt);
-    for (const content of Array.isArray(item?.content) ? item.content : []) {
-      if (content?.revised_prompt) return String(content.revised_prompt);
-    }
-  }
-  return "";
-}
-
-function asDataImage(base64, format) {
-  return `data:${format === "jpeg" ? "image/jpeg" : `image/${format}`};base64,${base64}`;
-}
-
-function addImageOptions(target, params) {
-  setValue(target, "size", params.size);
-  setValue(target, "quality", params.quality);
-  setValue(target, "output_format", params.outputFormat);
-  if (params.outputFormat !== "png" && params.compression !== "") setValue(target, "output_compression", params.compression);
-  if (params.moderation !== "auto") setValue(target, "moderation", params.moderation);
-}
-
-function setValue(target, key, value) {
-  if (target instanceof FormData) target.set(key, String(value));
-  else target[key] = value;
-}
-
-async function parseResponseJson(response) {
-  const text = await response.text();
-  if (!text) return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(text.slice(0, 300));
-  }
-}
-
-function assertUpstreamOk(response, json) {
-  if (response.ok && !json.error) return;
-  const message = json.error?.message || json.message || json.error || json.code || `${response.status} ${response.statusText}`;
-  throw new Error(typeof message === "string" ? message : JSON.stringify(message));
-}
-
-function dataUrlToBlob(dataUrl) {
-  const match = String(dataUrl || "").match(/^data:([^;,]+)?(;base64)?,(.*)$/);
-  if (!match) throw new Error("参考图格式无效");
-  const mime = match[1] || "image/jpeg";
-  const raw = match[2] ? atob(match[3] || "") : decodeURIComponent(match[3] || "");
-  const bytes = new Uint8Array(raw.length);
-  for (let index = 0; index < raw.length; index += 1) bytes[index] = raw.charCodeAt(index);
-  return new Blob([bytes], { type: mime });
-}
-
-function authHeaders(settings) {
-  const apiKey = String(settings?.apiKey || "").trim();
-  return {
-    Authorization: `Bearer ${apiKey}`,
-    "x-api-key": apiKey
-  };
-}
-
-function responseModel(model) {
-  const trimmed = String(model || "").trim();
-  if (!trimmed || trimmed.startsWith("gpt-image")) return "gpt-5.5";
-  return trimmed;
 }
 
 function renderHistory() {

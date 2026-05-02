@@ -1,5 +1,7 @@
 import express from "express";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
+import https from "node:https";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTemplateStore } from "./template-store.mjs";
@@ -402,28 +404,20 @@ async function generateOpenAIImage(settings, prompt, params, references) {
 }
 
 async function generateWithReferences(settings, prompt, params, references) {
-  const errors = [];
-  try {
+  if (settings.apiMode === "responses") {
     return {
       ...(await generateViaResponsesApi(settings, prompt, params, references)),
       referenceMode: "responses-edit"
     };
-  } catch (error) {
-    errors.push(`responses-edit: ${errorMessage(error)}`);
   }
-  try {
-    return {
-      ...(await editViaImagesApi(settings, prompt, params, references)),
-      referenceMode: "edits"
-    };
-  } catch (error) {
-    errors.push(`edits: ${errorMessage(error)}`);
-  }
-  throw new Error(`参考图编辑接口失败：${errors.join("；")}`);
+  return {
+    ...(await editViaImagesApi(settings, prompt, params, references)),
+    referenceMode: "edits"
+  };
 }
 
 async function generateViaImagesApi(settings, prompt, params) {
-  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/images/generations"), settings, {
+  const upstream = await requestJsonWithTimeout(joinUrl(settings.apiUrl, "/images/generations"), settings, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -455,19 +449,15 @@ async function editViaImagesApi(settings, prompt, params, references) {
 }
 
 async function editViaImagesMultipart(settings, prompt, params, references, imageFieldName) {
-  const form = new FormData();
-  form.set("model", settings.modelId.trim() || "gpt-image-2");
-  form.set("prompt", prompt);
-  form.set("n", String(params.count));
-  addImageOptions(form, params);
-  for (const reference of references) {
-    if (!reference?.dataUrl) continue;
-    form.append(imageFieldName, dataUrlToBlob(reference.dataUrl), reference.name || "reference.png");
-  }
-  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/images/edits"), settings, {
+  const { body, contentType } = buildMultipartEditBody(settings, prompt, params, references, imageFieldName);
+  const upstream = await requestJsonWithTimeout(joinUrl(settings.apiUrl, "/images/edits"), settings, {
     method: "POST",
-    headers: authHeaders(settings),
-    body: form
+    headers: {
+      ...authHeaders(settings),
+      "Content-Type": contentType,
+      "Content-Length": String(body.length)
+    },
+    body
   });
   const json = await parseJson(upstream);
   assertOk(upstream, json);
@@ -475,7 +465,7 @@ async function editViaImagesMultipart(settings, prompt, params, references, imag
 }
 
 async function editViaImagesJson(settings, prompt, params, references) {
-  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/images/edits"), settings, {
+  const upstream = await requestJsonWithTimeout(joinUrl(settings.apiUrl, "/images/edits"), settings, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -488,8 +478,47 @@ async function editViaImagesJson(settings, prompt, params, references) {
   return imagesResult(json, params.outputFormat);
 }
 
+function buildMultipartEditBody(settings, prompt, params, references, imageFieldName) {
+  const boundary = `----ccoderimage-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const chunks = [];
+  const addField = (name, value) => {
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${escapeMultipartName(name)}"\r\n\r\n${String(value)}\r\n`));
+  };
+  const addFile = (name, filename, mime, buffer) => {
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${escapeMultipartName(name)}"; filename="${escapeMultipartName(filename)}"\r\nContent-Type: ${mime || "image/jpeg"}\r\n\r\n`));
+    chunks.push(buffer);
+    chunks.push(Buffer.from("\r\n"));
+  };
+  addField("model", settings.modelId.trim() || "gpt-image-2");
+  addField("prompt", prompt);
+  addField("n", params.count);
+  addMultipartImageOptions(addField, params);
+  for (const reference of references) {
+    if (!reference?.dataUrl) continue;
+    const parsed = parseDataUrl(reference.dataUrl);
+    addFile(imageFieldName, reference.name || "reference.jpg", parsed.mime, parsed.buffer);
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`));
+  return {
+    body: Buffer.concat(chunks),
+    contentType: `multipart/form-data; boundary=${boundary}`
+  };
+}
+
+function addMultipartImageOptions(addField, params) {
+  addField("size", params.size);
+  addField("quality", params.quality);
+  addField("output_format", params.outputFormat);
+  if (params.outputFormat !== "png" && params.compression !== "") addField("output_compression", params.compression);
+  if (params.moderation !== "auto") addField("moderation", params.moderation);
+}
+
+function escapeMultipartName(value) {
+  return String(value).replace(/["\r\n]/g, "_");
+}
+
 async function generateViaResponsesApi(settings, prompt, params, references) {
-  const upstream = await fetchWithTimeout(joinUrl(settings.apiUrl, "/responses"), settings, {
+  const upstream = await requestJsonWithTimeout(joinUrl(settings.apiUrl, "/responses"), settings, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -569,6 +598,64 @@ async function fetchWithTimeout(url, settings, init) {
     throw error;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+function requestJsonWithTimeout(url, settings, init) {
+  const parsed = new URL(url);
+  const transport = parsed.protocol === "http:" ? http : https;
+  const body = toRequestBody(init.body);
+  const headers = { ...(init.headers || {}) };
+  if (body && !headers["Content-Length"] && !headers["content-length"]) headers["Content-Length"] = String(body.length);
+  return new Promise((resolve, reject) => {
+    const request = transport.request({
+      protocol: parsed.protocol,
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: `${parsed.pathname}${parsed.search}`,
+      method: init.method || "GET",
+      headers,
+      timeout: Math.max(1, settings.timeoutSeconds) * 1000
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      response.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        const json = parseJsonText(text, response.headers["content-type"]);
+        resolve({
+          ok: response.statusCode >= 200 && response.statusCode < 300,
+          status: response.statusCode || 0,
+          statusText: response.statusMessage || "",
+          json
+        });
+      });
+    });
+    request.on("timeout", () => {
+      request.destroy(new Error(`请求超时（${settings.timeoutSeconds} 秒）`));
+    });
+    request.on("error", reject);
+    if (body) request.write(body);
+    request.end();
+  });
+}
+
+function toRequestBody(body) {
+  if (!body) return null;
+  if (Buffer.isBuffer(body)) return body;
+  if (typeof body === "string") return Buffer.from(body);
+  if (body instanceof Uint8Array) return Buffer.from(body);
+  return Buffer.from(String(body));
+}
+
+function parseJsonText(text, contentType = "") {
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (/html/i.test(String(contentType)) || /^\s*<!doctype html/i.test(text) || /^\s*<html/i.test(text)) {
+      throw new Error(`接口返回了网页 HTML，不是 JSON。请确认 API URL 使用 OpenAI 兼容地址，例如 ${defaultApiUrl}`);
+    }
+    throw new Error(text.slice(0, 300));
   }
 }
 
