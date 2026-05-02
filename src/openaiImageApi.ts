@@ -74,9 +74,11 @@ export async function testOpenAIConnection(settings: Settings): Promise<ApiTestR
 }
 
 export function normalizeApiBaseUrl(value: string): string {
-  const trimmed = value.trim() || defaultApiUrl;
+  const trimmed = String(value || "").trim() || defaultApiUrl;
+  if (/^https?:?\/?\/?$/i.test(trimmed) || /^(https?|https?:)$/i.test(trimmed)) return defaultApiUrl;
   try {
     const url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+    if (!["http:", "https:"].includes(url.protocol) || ["http", "https"].includes(url.hostname)) return defaultApiUrl;
     url.search = "";
     url.hash = "";
     const parts = url.pathname.split("/").filter(Boolean);

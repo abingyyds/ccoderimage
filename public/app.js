@@ -5,7 +5,7 @@ const keys = {
   deletedHistory: "pic.native.deletedHistory"
 };
 
-const appVersion = "20260502-no-cache-mode-reference";
+const appVersion = "20260502-fix-reference-errors";
 const defaultApiUrl = "https://ccoder-production.up.railway.app/v1";
 const legacyDefaultApiUrl = "https://alexai.work/v1";
 const legacyHistoryKeys = ["alexai-replica-tasks", "gpt-image-node-tasks"];
@@ -1128,8 +1128,10 @@ function applyQuerySettings(settings) {
 
 function normalizeApiBaseUrl(value) {
   const trimmed = String(value || defaults.settings.apiUrl || defaultApiUrl).trim();
+  if (/^https?:?\/?\/?$/i.test(trimmed) || /^(https?|https?:)$/i.test(trimmed)) return defaultApiUrl;
   try {
     const url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+    if (!["http:", "https:"].includes(url.protocol) || ["http", "https"].includes(url.hostname)) return defaultApiUrl;
     url.search = "";
     url.hash = "";
     const parts = url.pathname.split("/").filter(Boolean);

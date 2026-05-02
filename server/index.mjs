@@ -667,6 +667,9 @@ function parseJsonText(text, contentType = "") {
 }
 
 async function parseJson(response) {
+  if (response && Object.prototype.hasOwnProperty.call(response, "json") && typeof response.text !== "function") {
+    return response.json || {};
+  }
   const text = await response.text();
   if (!text) return {};
   try {
@@ -991,9 +994,11 @@ function safeId(value) {
 }
 
 function normalizeApiBaseUrl(value) {
-  const trimmed = value.trim() || defaultApiUrl;
+  const trimmed = String(value || "").trim() || defaultApiUrl;
+  if (/^https?:?\/?\/?$/i.test(trimmed) || /^(https?|https?:)$/i.test(trimmed)) return defaultApiUrl;
   try {
     const url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+    if (!["http:", "https:"].includes(url.protocol) || ["http", "https"].includes(url.hostname)) return defaultApiUrl;
     url.search = "";
     url.hash = "";
     const parts = url.pathname.split("/").filter(Boolean);
@@ -1050,12 +1055,17 @@ function extensionFromDataUrl(dataUrl) {
   return "png";
 }
 
-function dataUrlToBlob(dataUrl) {
-  const match = dataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/);
+function parseDataUrl(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:([^;,]+)?(;base64)?,(.*)$/);
   if (!match) throw new Error("参考图格式无效");
   const mime = match[1] || "image/png";
-  const raw = match[2] ? Buffer.from(match[3], "base64") : Buffer.from(decodeURIComponent(match[3]));
-  return new Blob([raw], { type: mime });
+  const buffer = match[2] ? Buffer.from(match[3] || "", "base64") : Buffer.from(decodeURIComponent(match[3] || ""));
+  return { mime, buffer };
+}
+
+function dataUrlToBlob(dataUrl) {
+  const parsed = parseDataUrl(dataUrl);
+  return new Blob([parsed.buffer], { type: parsed.mime });
 }
 
 function isSupportedReferenceDataUrl(dataUrl) {
